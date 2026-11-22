@@ -25,6 +25,10 @@ type CompareTreeProps = {
   onOpen: (node: CompareNode) => void;
   onSelect: (node: CompareNode | undefined) => void;
   onCompareWithSelected: (node: CompareNode) => void;
+  /** Called when a row gets keyboard or mouse focus (attribution follows it). */
+  onFocusRow?: (node: CompareNode) => void;
+  /** Paths to emphasize, e.g. where a selected commit accounts for differences. */
+  highlighted?: ReadonlySet<string>;
 };
 
 const presentClass: Record<CompareNode['status'], string> = {
@@ -107,6 +111,7 @@ function Cell({
           )}
           <EntryIcon info={info} open={row.expanded} />
           <span className="truncate">{node.name}</span>
+          <RenameNote node={node} side={side} />
           {hasDifferencesInside && (
             <span
               className="size-2 shrink-0 rounded-full bg-modified-dot"
@@ -128,6 +133,21 @@ function Cell({
         </>
       )}
     </div>
+  );
+}
+
+/** "renamed → new/path (92%)" on the Base side, "← old/path" on the Target side. */
+function RenameNote({ node, side }: { node: CompareNode; side: Side }) {
+  const other = side === 'left' ? node.renamedTo : node.renamedFrom;
+  if (other === undefined) return null;
+  return (
+    <span
+      className="shrink truncate rounded bg-surface/70 px-1 text-xs text-muted"
+      title={`Git detected a rename (${node.similarity ?? 0}% similar)`}
+    >
+      {side === 'left' ? `renamed → ${other}` : `renamed from ${other}`}
+      {node.similarity !== undefined && node.similarity < 100 ? ` (${node.similarity}%)` : ''}
+    </span>
   );
 }
 
@@ -172,6 +192,8 @@ export function CompareTree({
   onOpen,
   onSelect,
   onCompareWithSelected,
+  onFocusRow,
+  highlighted,
 }: CompareTreeProps): JSX.Element {
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>, row: TreeRow) => {
     const el = e.currentTarget;
@@ -216,11 +238,16 @@ export function CompareTree({
             aria-expanded={row.isDirectory ? row.expanded : undefined}
             aria-selected={isSelected}
             data-status={node.status}
+            data-highlighted={highlighted?.has(node.path) === true ? 'true' : undefined}
             tabIndex={0}
             className={clsx(
               'group relative grid cursor-default select-none grid-cols-2 border-b border-line/60 outline-none hover:brightness-95 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent dark:hover:brightness-125',
               isSelected && 'ring-2 ring-inset ring-accent',
+              highlighted?.has(node.path) === true && 'shadow-[inset_4px_0_0_var(--color-accent)]',
             )}
+            onFocus={(e) => {
+              if (e.target === e.currentTarget) onFocusRow?.(node);
+            }}
             onDoubleClick={() => {
               onOpen(node);
             }}

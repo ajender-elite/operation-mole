@@ -1,4 +1,8 @@
 import type {
+  ApplicabilityRequest,
+  ApplicabilityResult,
+  CommitPatch,
+  CommitPatchRequest,
   DefaultsResponse,
   DirectoryCompareRequest,
   DirectoryCompareResult,
@@ -6,8 +10,14 @@ import type {
   RepoInfo,
   SessionDetail,
   SessionSummary,
+  SnapshotFileDiff,
+  SnapshotFileDiffRequest,
+  UpstreamCommitList,
+  UpstreamCommitsRequest,
 } from '@om/shared';
 import {
+  ApplicabilityResultSchema,
+  CommitPatchSchema,
   DefaultsResponseSchema,
   DirectoryCompareResultSchema,
   FileCompareResultSchema,
@@ -15,6 +25,8 @@ import {
   SessionDetailSchema,
   SessionSummaryListSchema,
   SessionSummarySchema,
+  SnapshotFileDiffSchema,
+  UpstreamCommitListSchema,
 } from '@om/shared';
 
 /** A failed API call. `status` is the HTTP status, or 0 when the server could not be reached. */
@@ -38,7 +50,9 @@ async function send(path: string, init?: RequestInit): Promise<{ status: number;
   let res: Response;
   try {
     res = await fetch(new URL(path, window.location.origin), init);
-  } catch {
+  } catch (error) {
+    // A cancelled request (navigated away, query cancelled) is not an unreachable server.
+    if (init?.signal?.aborted === true) throw error;
     throw new ApiRequestError(UNREACHABLE, 0);
   }
   // The Vite dev proxy answers 502/503/504 when the API process is down.
@@ -168,4 +182,57 @@ export function compareFiles(
  */
 export function getDefaults(): Promise<DefaultsResponse> {
   return request('/api/defaults', (b) => DefaultsResponseSchema.parse(b));
+}
+
+/**
+ * One file between two git snapshots, with git's hunks and per-line attribution (`POST /api/snapshot/file-diff`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function snapshotFileDiff(
+  body: SnapshotFileDiffRequest,
+  signal?: AbortSignal,
+): Promise<SnapshotFileDiff> {
+  return request('/api/snapshot/file-diff', (b) => SnapshotFileDiffSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * A window of upstream commits and whether downstream contains each (`POST /api/upstream/commits`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function upstreamCommits(
+  body: UpstreamCommitsRequest,
+  signal?: AbortSignal,
+): Promise<UpstreamCommitList> {
+  return request('/api/upstream/commits', (b) => UpstreamCommitListSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * What applying one upstream commit to the pristine downstream snapshot does (`POST /api/upstream/applicability`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function applicability(
+  body: ApplicabilityRequest,
+  signal?: AbortSignal,
+): Promise<ApplicabilityResult> {
+  return request('/api/upstream/applicability', (b) => ApplicabilityResultSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * A commit's files and hunks against its first parent (`POST /api/upstream/patch`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function commitPatch(body: CommitPatchRequest, signal?: AbortSignal): Promise<CommitPatch> {
+  return request('/api/upstream/patch', (b) => CommitPatchSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
 }

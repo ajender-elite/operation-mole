@@ -30,9 +30,10 @@ Times are ISO 8601 strings in UTC. IDs come from `crypto.randomUUID()`.
 ```
 .data/
   om.db
+  scratch/objects-*/                         temporary object folders for applicability (removed after each run)
   users/<username>/sessions/<sessionId>/
     repos/<repoId>/                          bare clone (git clone --bare --filter=blob:none)
-    worktrees/<repoId>/<encoded-branch>/     one checkout per branch (git worktree, detached at the branch tip)
+    worktrees/<repoId>/<encoded-branch>/     one checkout per branch, tag or pinned SHA (git worktree, detached)
 ```
 
 - **Folder names:** only the validated username and generated ids are used. Branch names are URL-encoded, so `feature/x` becomes `feature%2Fx`.

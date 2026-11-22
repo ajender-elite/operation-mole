@@ -8,7 +8,9 @@ OM is a small monorepo (pnpm workspace) with a TypeScript API, a React single-pa
 │  routes ─ pages ─ components          │ ─────▶ │   ├─ compare/   walk two folders, byte-compare, sort         │
 │  TanStack Query cache                 │        │   ├─ files/     read a file for the diff view                │
 │  URL search params = view state       │        │   ├─ git/       GitService (git CLI) + RepoManager (sessions) │
-│  Monaco diff (lazy-loaded)            │        │   └─ store/     Store (node:sqlite)                           │
+│  Monaco diff (lazy-loaded)            │        │   ├─ snapshot/  file diffs, blame attribution, renames       │
+│  attribution aggregation (lib/)       │        │   ├─ upstream/  commit window, applicability (merge-tree)    │
+│                                       │        │   └─ store/     Store (node:sqlite)                           │
 └───────────────────────────────────────┘        └──────────────┬──────────────────────────────┬──────────────────┘
                  ▲ packages/shared: types + zod schemas used by both ▲   │                      │
                                                                          ▼                      ▼
@@ -52,6 +54,22 @@ See [git integration](git-integration.md).
 2. Text content is included up to 5 MB.
 3. `identical` comes from a byte comparison.
 4. The web app renders the result in Monaco's diff editor, or a summary for binary or oversized files.
+
+### Snapshot file diff (`POST /api/snapshot/file-diff`)
+
+1. Both git sides resolve to commits (`RepoManager.resolveSnapshot`, no checkout needed).
+2. `SnapshotAnalyzer.fileDiff` reads each side's entry (`git ls-tree`, `git cat-file`), decides text/binary/too-large, and runs `git diff` on the two blobs through an [object view](git-integration.md#analysis-commands) (the two sides may live in different clones).
+3. Changed lines are blamed on their own side (`git blame --porcelain -L …`), after prefetching that file's history in one request for blob-less clones. Each commit gets its reachability from both snapshots (`git merge-base --is-ancestor`, cached).
+4. The result is cached by `(left commit, right commit, paths, context)`.
+
+Folder attribution is assembled in the browser from these per-file results (see [frontend](frontend.md#attribution)).
+
+### Upstream applicability (`POST /api/upstream/applicability`)
+
+1. Upstream resolves to a commit; downstream resolves and is checked out (so a blob-less clone has its file contents).
+2. `UpstreamAnalyzer` lists the files the commit changes, prefetches both versions, and checks `merge-base --is-ancestor` (reachable → represented).
+3. Otherwise `git merge-tree --write-tree --merge-base=<first parent> <downstream> <commit>` runs with a scratch object directory; the result tree is compared with downstream's, conflicts are excerpted, and `git log --cherry-mark` looks for patch-equivalent downstream commits (20 s limit).
+4. The scratch directory is removed whatever happens. Results are cached by `(commit, downstream commit)`.
 
 ## Error handling
 

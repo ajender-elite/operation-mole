@@ -27,6 +27,13 @@ export function findNode(root: CompareNode, path: string): CompareNode | undefin
   return node;
 }
 
+/** The file (non-folder) entry at a relative path, even when a folder shares its name. */
+export function findEntry(root: CompareNode, path: string): CompareNode | undefined {
+  const slash = path.lastIndexOf('/');
+  const parent = slash < 0 ? root : findNode(root, path.slice(0, slash));
+  return parent?.children?.find((c) => c.path === path && !isDirectory(c));
+}
+
 /** Stable unique key for a row: a file and a folder can share a path. */
 export function rowKey(node: CompareNode): string {
   return `${node.path}\u0000${isDirectory(node) ? 'dir' : 'entry'}`;

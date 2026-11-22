@@ -4,7 +4,11 @@ Code: `apps/server/src/compare/` (`compare-directories.ts`, `files-equal.ts`, `s
 
 ## Matching
 
-Entries are matched by **relative path**: `src/a.ts` on the base side is compared with `src/a.ts` on the target side. Files with different names are never paired automatically. In the UI, use **Select for compare** to diff two files with different names.
+Entries are matched by **relative path**: `src/a.ts` on the base side is compared with `src/a.ts` on the target side. Files with different names are never paired as one entry. In the UI, use **Select for compare** to diff two files with different names.
+
+### Renames (git sides only)
+
+When both sides are git snapshots, OM asks git which files were renamed between the two commits (`git diff -M --diff-filter=R`). The tree still lists the old name as only-in-base and the new name as only-in-target, but links them: `renamedTo`/`renamedFrom` plus git's similarity percentage. The UI shows "renamed → new/path (92%)" and diffs the pair as one file. Summary counts are unchanged. Folder sources get no rename detection (no history to ask).
 
 ## Statuses
 
@@ -48,6 +52,10 @@ Only the server sorts; the UI keeps the order it receives. The locale is fixed t
 ## Summary counts
 
 The summary counts **files and symlinks** by status, including those inside one-sided folders. Folders aren't counted, since they only collect their contents' statuses. A file/folder name clash counts the file as one-sided. Unreadable entries count as errors.
+
+## Snapshot file diff (git sides, in Folders)
+
+For two git snapshots, opening a file shows **git's own hunks** for that file between the two commits (`git diff` of the two blobs), read Base → Target, with each changed line attributed. A rename pair is diffed as one file; a one-sided file is one hunk of only `−` or only `+` lines. Binary files (same NUL rule) and text over 5 MB get no hunks. See [investigation model](investigation-model.md).
 
 ## File diff (Files page)
 

@@ -1,10 +1,21 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { RepoInfo, Source } from '@om/shared';
+import type { GitSource, RepoInfo, Source } from '@om/shared';
 import { CompareInputError, NotFoundError } from '../errors.ts';
 import type { RepoRecord, Store } from '../store/store.ts';
 import { GitService } from './git-service.ts';
+
+/** A git side resolved to an exact commit in one of the session's clones. */
+export type ResolvedSnapshot = {
+  /** The bare clone holding the commit (its object database and history). */
+  repoDir: string;
+  /** Full commit SHA. */
+  commit: string;
+  /** What was asked for (branch, tag or commit). */
+  ref: string;
+  label: string;
+};
 
 /** A comparison side turned into a folder on disk (see {@link RepoManager.resolve}). */
 export type ResolvedSource = {
@@ -13,6 +24,8 @@ export type ResolvedSource = {
   label: string;
   /** Names to skip at the top level (a checkout's `.git`). */
   ignore: string[];
+  /** For git sides: the snapshot the folder is a checkout of. */
+  snapshot?: ResolvedSnapshot;
 };
 
 /** The API view of a stored repo (drops the owning session id). */
@@ -136,16 +149,42 @@ export class RepoManager {
     if (user === undefined || user === '' || sessionId === undefined || sessionId === '') {
       throw new CompareInputError('Comparing a git branch needs a session');
     }
+    const snapshot = await this.resolveSnapshot(source, user, sessionId, { shouldCheckOut: true });
+    const repo = this.#requireRepo(sessionId, source.repoId);
+    return {
+      root: this.#worktreeDir(user, sessionId, repo.id, source.branch),
+      label: snapshot.label,
+      ignore: ['.git'],
+      snapshot,
+    };
+  }
+
+  /**
+   * Resolves a git side to its exact commit. With `shouldCheckOut`, also makes sure the
+   * side's worktree holds that commit, which (in a blob-less clone) downloads its file
+   * contents so later analysis finds them locally.
+   */
+  async resolveSnapshot(
+    source: GitSource,
+    user: string,
+    sessionId: string,
+    { shouldCheckOut = false }: { shouldCheckOut?: boolean } = {},
+  ): Promise<ResolvedSnapshot> {
     this.#requireSession(user, sessionId);
     const repo = this.#requireRepo(sessionId, source.repoId);
-    const root = await this.#exclusive(`${sessionId}:${repo.url}`, () =>
-      this.#git.checkout(
-        this.#repoDir(user, sessionId, repo.id),
-        source.branch,
-        this.#worktreeDir(user, sessionId, repo.id, source.branch),
-      ),
-    );
-    return { root, label: `${repo.name} @ ${source.branch}`, ignore: ['.git'] };
+    const repoDir = this.#repoDir(user, sessionId, repo.id);
+    const commit = await this.#exclusive(`${sessionId}:${repo.url}`, async () => {
+      const sha = await this.#git.resolveCommit(repoDir, source.branch);
+      if (shouldCheckOut) {
+        await this.#git.checkout(
+          repoDir,
+          sha,
+          this.#worktreeDir(user, sessionId, repo.id, source.branch),
+        );
+      }
+      return sha;
+    });
+    return { repoDir, commit, ref: source.branch, label: `${repo.name} @ ${source.branch}` };
   }
 
   async deleteSession(user: string, sessionId: string): Promise<boolean> {

@@ -7,7 +7,7 @@ Guidance for Claude (and other coding agents) working in this repo. Read this fi
 **OM (Operation Mole)** is a local web app for comparing a **Base** and a **Target**: two folders, or two git branches cloned into a per-user **session**. It shows what is identical, different, or present on only one side, and has a Monaco file diff.
 
 - Users identify by **username only** (no passwords). Sessions belong to a user. Each session has its own cloned repos and a list of recent comparisons.
-- Experiences: **Folders** (tree compare), **Files** (diff), **Lab** (placeholder for the next experience).
+- Experiences: **Folders** (tree compare; for git snapshots also in-place git hunks and divergence attribution), **Files** (Monaco diff), **Upstream** (commit applicability). The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
 
 ## Commands
 
@@ -17,6 +17,7 @@ pnpm dev                   # API :5181 (node --watch) + web :5180 (Vite). Open h
 pnpm check                 # typecheck + eslint (0 warnings) + prettier --check + all tests. Must pass.
 pnpm test                  # all Vitest projects (shared, server, web)
 pnpm test:coverage         # tests + 80% line/branch thresholds
+pnpm test:remote           # network: checks the pinned public seed against GitHub (not part of check)
 pnpm vitest run --project server test/git-service.test.ts   # one file
 pnpm build && pnpm start   # production: one server on :5181
 ```
@@ -34,11 +35,13 @@ apps/server       Fastify. Node runs .ts directly (type stripping). No build ste
   src/config/           server-config.ts: env vars + flags, validated with zod (the only place env is read)
   src/app.ts            all routes + error mapping (CompareInputError→400, NotFound→404, Conflict→409)
   src/compare/          folder walk, byte comparison, sort order (sort.ts)
-  src/git/              git-service.ts (clone/branches/worktree/fetch), repo-manager.ts (per-session dirs, locks)
+  src/git/              git-service.ts (clone/branches/worktree/fetch, run() for analysis), repo-manager.ts (per-session dirs, locks, snapshots)
+  src/snapshot/         snapshot-analyzer.ts (file diff + blame attribution, renames, ancestry), parsers, object views
+  src/upstream/         upstream-analyzer.ts (commit window, merge-tree applicability, patches)
   src/store/store.ts    node:sqlite: users, sessions, repos, recent comparisons
-  test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts).
+  test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts; scenario.ts builds deterministic histories on the pinned seed in test/seed/).
 apps/web          React 19 + Vite + Tailwind v4 + TanStack Query + React Router + Monaco
-  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/files|/lab]
+  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/files|/upstream] (/lab redirects)
   src/components/, src/pages/   kebab-case files (app-shell.tsx), PascalCase components (AppShell)
   src/lib/              api client (parses every response with the shared schemas), sources (URL⇄Source), session hooks, tree, theme, format
   src/test/             MSW server + handlers, renderApp(url) helper
@@ -82,7 +85,11 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 - **Git:**
   - The system git runs through simple-git. Each repo is a bare `--filter=blob:none` clone per session, with one worktree per branch.
   - `.git` is ignored at the root of git sides.
-  - Nothing fetches automatically; the user clicks **Fetch latest**.
+  - Nothing fetches branches automatically; the user clicks **Fetch latest**. (Analysis does fetch missing file contents into blob-less clones, never refs.)
+  - Analysis (diff, blame, log, merge-tree) goes through `GitService.run`, not simple-git; it must never write refs, the index or a worktree. `merge-tree` writes only to a scratch `GIT_OBJECT_DIRECTORY` that is always removed.
+  - A git side resolves to an exact commit (branch, tag or SHA); analyses run on SHAs.
+  - Attribution is `git blame` on each changed line's own side. Never present it as the historical cause; label shared-history commits.
+  - Applicability evaluates each upstream commit independently against the same downstream commit. Never describe a conflict as "missing" or a clean apply as "safe".
 - **Git security (don't weaken):**
   - URLs: https, ssh and scp-style only (`file://` only in tests via `allowedProtocols`).
   - Environment: `GIT_ALLOW_PROTOCOL`, `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode`, and an allowlist of inherited variables (simple-git rejects others such as `GIT_EDITOR`).
@@ -105,6 +112,8 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 - **MSW v3** uses `onUnhandledFrame` (not `onUnhandledRequest`). Unhandled requests fail tests, so every page test needs handlers for every request the page makes, including the session `GET` the header makes.
 - **jsdom has no `matchMedia`:** `src/test/setup.ts` stubs it (light by default). `stubMatchMedia(true)` simulates dark mode.
 - **No relative URLs in `fetch`:** jsdom's `fetch` rejects them, so the API client builds absolute URLs from `window.location.origin`.
+- **Blob-less clones and blame:** blaming a file in a `--filter=blob:none` clone fetches its history one object at a time unless prefetched. Keep `prefetchMissing` before blame and merge-tree, and `gc.auto=0` on analysis (lazy fetches add packs; auto-repack under concurrent readers broke blame on a real repo).
+- **Test scenarios serve partial clones** (`uploadpack.allowFilter`), so OM's test clones are blob-less like GitHub's. A test that reads objects directly from OM's clone must expect missing blobs.
 - **Local data:** `.data/` holds the database and clones. It's in `.gitignore`. Delete it to reset local state.
 
 ## Docs to update when behavior changes

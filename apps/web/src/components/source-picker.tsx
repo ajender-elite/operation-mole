@@ -13,7 +13,10 @@ const field =
 const small = 'mb-1 block text-xs font-medium text-muted';
 
 type SourcePickerProps = {
-  side: 'Base' | 'Target';
+  /** The side's name in the UI, e.g. "Base" or "Upstream". */
+  side: string;
+  /** Offer local folders as well as git repos (default true). */
+  allowPaths?: boolean;
   value: SourceDraft;
   onChange: (value: SourceDraft) => void;
   repos: RepoInfo[];
@@ -24,6 +27,7 @@ type SourcePickerProps = {
 /** Chooses one side of a comparison: a local folder, or a branch of a git repo in the session. */
 export function SourcePicker({
   side,
+  allowPaths = true,
   value,
   onChange,
   repos,
@@ -58,6 +62,7 @@ export function SourcePicker({
       <div className="flex items-center justify-between gap-2">
         <legend className="text-sm font-semibold">{side}</legend>
         <div
+          hidden={!allowPaths}
           role="radiogroup"
           aria-label={`${side} source`}
           className="flex overflow-hidden rounded-md border border-line text-xs"

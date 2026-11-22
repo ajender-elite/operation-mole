@@ -25,6 +25,37 @@ Notes:
 - **Manual freshness:** nothing fetches on its own. Users click **Fetch latest** (in the Folders picker or the session overview).
 - **`.git` is hidden:** a worktree has a `.git` file at its root. It's skipped when comparing git sources, so it never shows as a difference.
 
+## Analysis commands
+
+Diffs, blame, history and applicability run through `GitService.run`: git spawned directly (no shell) with the same environment allowlist, plus exit codes, abort signals and per-command environment, which simple-git doesn't expose. Every analysis command gets:
+
+| Setting                                                                                                                    | Why                                                                               |
+| -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `--literal-pathspecs`                                                                                                      | Paths from requests are never pathspec magic (`:(glob)…`)                         |
+| `-c core.quotePath=false -c diff.noprefix=false -c diff.mnemonicPrefix=false -c color.ui=never -c log.showSignature=false` | Output in the shape OM parses, whatever the machine's config                      |
+| `-c gc.auto=0 -c maintenance.auto=false`                                                                                   | Lazy fetches add packs; automatic repacking must not run under concurrent readers |
+| `GIT_OPTIONAL_LOCKS=0`                                                                                                     | Reads take no locks                                                               |
+
+| Question            | Command(s)                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Snapshot identity   | `rev-parse --verify refs/heads/<x>^{commit}`, then `refs/tags/<x>`, then `<sha>` (`resolveCommit`)                  |
+| Renames             | `diff --name-status -z -M --diff-filter=R <left> <right>`                                                           |
+| One file's diff     | `ls-tree -z -l`, `cat-file blob`, `diff -U<n> --no-ext-diff --no-textconv <blob> <blob>`                            |
+| Current attribution | `blame --porcelain -L a,b … <commit> -- <path>` on each line's own side                                             |
+| Reachability        | `merge-base --is-ancestor <commit> <tip>` (cached)                                                                  |
+| Upstream window     | `log -z --format=… --max-count=N [--since] [--first-parent] <up> [^<down>]`                                         |
+| Applicability       | `merge-tree --write-tree -z --name-only --merge-base=<parent> <down> <commit>`, then `diff-tree` against downstream |
+| Patch equivalence   | `log --left-right --cherry-mark --no-merges <down>...<commit> ^<parent>`                                            |
+| Patch               | `diff-tree -r -M -p <parent> <commit>` and `--name-status -z` for the file list                                     |
+
+**Object views.** The two snapshots may live in different clones (different remotes). An object view runs git in one clone with the other clone's `objects` folder in `GIT_ALTERNATE_OBJECT_DIRECTORIES`, so one process sees both. Nothing is fetched between clones and no clone's config changes.
+
+**Scratch objects.** `merge-tree` writes trees and blobs. It runs with `GIT_OBJECT_DIRECTORY` set to a new `<data>/scratch/objects-*` folder (the real object folders become alternates), removed afterwards on success, conflict, failure or abort.
+
+**Blob-less clones.** Clones have no file contents until needed. Before blaming a file, or applying a commit, `prefetchMissing` lists the missing blobs (`rev-list --objects --missing=print … -- <paths>`) and fetches them in one request (`fetch --filter=blob:none origin <oids>`), instead of git's one-round-trip-per-object lazy fetch. On a real repository this took one file's blame from many seconds to under one. Failures are ignored; git still fetches lazily.
+
+Analysis needs git **2.38 or later** (`merge-tree --write-tree`).
+
 ## The server's own git config
 
 OM runs the server machine's git with that machine's configuration, on Linux, macOS and Windows alike: `~/.gitconfig` (or `%USERPROFILE%\.gitconfig`), `$XDG_CONFIG_HOME/git/config`, the system config, credential helpers (including Git Credential Manager, which needs `APPDATA`/`LOCALAPPDATA`) and SSH keys. The inherited variables cover what each OS needs to find these. Windows git also needs `SystemRoot` to open network sockets.
@@ -32,6 +63,8 @@ OM runs the server machine's git with that machine's configuration, on Linux, ma
 Setting `GIT_SSH_COMMAND` would override `core.sshCommand`, so at startup `configuredSshCommand()` reads it (outside any repo, so only system/global config apply), and OM uses it with `-o BatchMode=yes` appended.
 
 ## Locking
+
+Analysis commands only read clones (and add fetched objects), so they don't take the per-repo lock and run in parallel, at most 8 git processes for reachability and 4 applicability evaluations at a time.
 
 `RepoManager` runs at most one git operation at a time per `(session, repo URL)`: clone, fetch or checkout. Two quick compares or a fetch during a checkout therefore can't corrupt a repo. Different repos and sessions run in parallel.
 
