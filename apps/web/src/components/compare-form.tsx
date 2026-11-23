@@ -11,6 +11,11 @@ type CompareFormProps = {
   user: string;
   sessionId: string;
   onSubmit: (left: Source, right: Source) => void;
+  /** Names of the two sides (default Base and Target). */
+  labels?: readonly [string, string];
+  /** Only git snapshots (no local folders), e.g. for upstream analysis. */
+  isGitOnly?: boolean;
+  submitLabel?: string;
 };
 
 /** Base and target pickers with swap and compare. Remount (via `key`) to reset from props. */
@@ -21,9 +26,13 @@ export function CompareForm({
   user,
   sessionId,
   onSubmit,
+  labels = ['Base', 'Target'],
+  isGitOnly = false,
+  submitLabel = 'Compare',
 }: CompareFormProps): JSX.Element {
-  const [left, setLeft] = useState<SourceDraft>(initialLeft ?? emptyDraft);
-  const [right, setRight] = useState<SourceDraft>(initialRight ?? emptyDraft);
+  const blank: SourceDraft = isGitOnly ? { type: 'git', repoId: '', branch: '' } : emptyDraft;
+  const [left, setLeft] = useState<SourceDraft>(initialLeft ?? blank);
+  const [right, setRight] = useState<SourceDraft>(initialRight ?? blank);
   const isReady = isComplete(left) && isComplete(right);
 
   const submit = (e: SubmitEvent<HTMLFormElement>) => {
@@ -31,10 +40,10 @@ export function CompareForm({
     if (isReady) onSubmit(toSource(left), toSource(right));
   };
 
-  const common = { repos, user, sessionId };
+  const common = { repos, user, sessionId, allowPaths: !isGitOnly };
   return (
     <form onSubmit={submit} className="grid items-end gap-3 sm:grid-cols-[1fr_auto_1fr_auto]">
-      <SourcePicker side="Base" value={left} onChange={setLeft} {...common} />
+      <SourcePicker side={labels[0]} value={left} onChange={setLeft} {...common} />
       <button
         type="button"
         title="Swap sides"
@@ -47,13 +56,13 @@ export function CompareForm({
       >
         <ArrowLeftRight className="size-4" aria-hidden />
       </button>
-      <SourcePicker side="Target" value={right} onChange={setRight} {...common} />
+      <SourcePicker side={labels[1]} value={right} onChange={setRight} {...common} />
       <button
         type="submit"
         disabled={!isReady}
         className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50"
       >
-        Compare
+        {submitLabel}
       </button>
     </form>
   );

@@ -14,8 +14,12 @@
 - **Folders:** compare a **Base** and a **Target**, byte for byte. Each side is either a local folder or a branch of a git repo.
   - Green means only in base, blue means only in target, and orange means different. Identical entries keep the default color, and a folder gets an orange dot when something inside it differs.
   - Folders are listed first, then files, each in natural, case-insensitive order (`file2` before `file10`).
+  - With two **git** snapshots (a branch, tag or commit on each side, from one remote or two), OM also explains the differences:
+    - each side shows the exact commit it resolved to, and renamed files are linked;
+    - a side panel lists the commits that currently account for the differences in whatever you focus (the whole repository, a folder, a file, a hunk, a line), from `git blame` on each line's own side, marking commits both histories share;
+    - files open in place as git's hunks with each changed line's commit; select a commit to see every difference it accounts for.
 - **Files:** a side-by-side or inline diff using Monaco, the diff editor from VS Code. Binary and very large files get a summary with size and SHA-256 instead.
-- **Lab:** reserved for the next experience.
+- **Upstream:** pick an upstream and a downstream branch and a window of upstream commits (last N, since a date, mainline only, hide what downstream has). Each commit is applied on its own to the same downstream commit with `git merge-tree` and reported as **clean apply**, **already represented** (same commit, equivalent patch, or equivalent content), **conflicting apply** or **unknown**, with the evidence: per-file outcomes, conflict excerpts, equivalent commits and the patch. Nothing is written to any repository.
 - **Light and dark mode:** switch with the sun/moon button at the top right.
 
 ## Setup
@@ -71,6 +75,14 @@ pnpm start
 ```
 
 This serves the built app and the API together on http://127.0.0.1:5181.
+
+### Check against the real public test repository
+
+```bash
+pnpm test:remote
+```
+
+Needs the network. It checks that the pinned commits the offline tests use still exist on GitHub.
 
 ### Check everything
 

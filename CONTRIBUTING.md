@@ -19,7 +19,7 @@ Deviations, each also documented where it applies:
 | §11 no real I/O in unit tests                                     | Server tests use real temp folders and real git.                                                                                                                                         | The edge cases (symlinks, CRLF, permissions, git behavior) only show with the real thing.                                  |
 | §5 `unicorn/no-array-for-each`                                    | `unicorn/no-for-each`                                                                                                                                                                    | Same rule, renamed in eslint-plugin-unicorn 80.                                                                            |
 
-Not adopted yet (open work, not deviations): branded types for ids (§7.1), `AbortSignal` on long-running git and folder operations (§7.5), and `readonly` throughout public signatures (§7.3).
+Not adopted yet (open work, not deviations): branded types for ids (§7.1), `AbortSignal` on clone, fetch, checkout and folder walks (§7.5; git analysis commands already take one), and `readonly` throughout public signatures (§7.3).
 
 ---
 

@@ -17,6 +17,11 @@ export function stubMatchMedia(prefersDark = false): void {
   });
 }
 
+/** jsdom doesn't lay out, so it has no scrollIntoView; views call it when focus moves. */
+Element.prototype.scrollIntoView = function scrollIntoView() {
+  // nothing to scroll in jsdom
+};
+
 beforeEach(() => {
   stubMatchMedia();
   localStorage.clear();

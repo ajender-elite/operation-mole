@@ -79,7 +79,7 @@ Fetches every branch from the remote: new commits and new branches are added, an
 ```ts
 type Source =
   | { type: 'path'; path: string } // absolute path
-  | { type: 'git'; repoId: string; branch: string };
+  | { type: 'git'; repoId: string; branch: string }; // branch, tag, or (abbreviated) commit SHA
 
 interface Body {
   left: Source | string; // a bare absolute path is shorthand for a path source
@@ -105,6 +105,8 @@ interface DirectoryCompareResult {
     onlyRight: number;
     errors: number;
   };
+  leftSnapshot?: { commit: string; ref: string }; // git sides: the exact commit compared
+  rightSnapshot?: { commit: string; ref: string };
 }
 
 interface CompareNode {
@@ -115,6 +117,9 @@ interface CompareNode {
   right?: EntryInfo;
   children?: CompareNode[]; // present for folders, already sorted
   error?: string;
+  renamedTo?: string; // only-left file git detected as renamed (git sides only)
+  renamedFrom?: string; // only-right file git detected as renamed
+  similarity?: number; // rename similarity, percent
 }
 
 interface EntryInfo {
@@ -154,6 +159,106 @@ interface FileContent {
 ```
 
 Returns **404** for a missing file, and **400** if a path is a folder.
+
+## Snapshot analysis
+
+These need git sources on both sides and a session (`user`, `sessionId` in the body). Results describe exact commits and are cached by SHA. A client that disconnects cancels the git work.
+
+### `POST /api/snapshot/file-diff`
+
+Body: `{ left: GitSource, right: GitSource, user, sessionId, leftPath?, rightPath?, fullFile? }`. Give both paths for a modified or renamed file, one for a one-sided file. Paths are POSIX, relative, without `.`/`..`, and read literally (no pathspec magic).
+
+```ts
+interface SnapshotFileDiff {
+  leftCommit: string;
+  rightCommit: string;
+  leftPath?: string;
+  rightPath?: string;
+  content: 'text' | 'identical' | 'binary' | 'too-large';
+  hunks: DiffHunk[]; // git's hunks, Base → Target (3 lines of context, or the whole file)
+  commits: DivergenceCommit[]; // every commit a line points to
+  attributionNote?: string; // e.g. git blame failed on one side
+  truncated?: boolean; // more than 20,000 lines
+}
+interface DiffHunk {
+  header: string; // "@@ -a,b +c,d @@ …"
+  leftStart: number;
+  leftCount: number;
+  rightStart: number;
+  rightCount: number;
+  lines: Array<{
+    kind: 'context' | 'removed' | 'added';
+    text: string;
+    leftLine?: number; // context and removed
+    rightLine?: number; // context and added
+    commit?: string; // git blame on the line's own side (removed: Base, added: Target)
+  }>;
+}
+interface DivergenceCommit {
+  sha: string;
+  subject: string;
+  authorName: string;
+  authorEmail: string;
+  authorDate: string; // %aI
+  committerName: string;
+  committerEmail: string;
+  commitDate: string; // %cI
+  inLeft: boolean | null; // reachable from the Base snapshot (null: unknown)
+  inRight: boolean | null;
+}
+```
+
+**404** for a path missing from its snapshot; **400** for a bad path or a non-file (e.g. a submodule).
+
+## Upstream applicability
+
+`upstream` is the snapshot whose commits are examined (Base), `downstream` the one they are applied to (Target).
+
+### `POST /api/upstream/commits`
+
+Body: `{ upstream, downstream, user, sessionId, limit = 20 (1–200), since?: 'YYYY-MM-DD', firstParent = false, hideReachable = false }`. `since` is `git log --since` (commit date, from the start of that day in server time). `hideReachable` lists `upstream ^downstream`.
+
+```ts
+interface UpstreamCommitList {
+  upstream: { commit: string; ref: string };
+  downstream: { commit: string; ref: string };
+  upstreamLabel: string;
+  downstreamLabel: string;
+  commits: Array<CommitInfo & { parents: string[]; reachableFromDownstream: boolean }>;
+  hasMore: boolean; // more commits match than `limit`
+}
+```
+
+### `POST /api/upstream/applicability`
+
+Body: `{ upstream, downstream, user, sessionId, commit }` (a full SHA). Applies that commit alone to the downstream commit. See [investigation model](investigation-model.md#applicability-states) for what each status means.
+
+```ts
+interface ApplicabilityResult {
+  commit: string;
+  downstreamCommit: string;
+  status: 'clean' | 'represented' | 'conflict' | 'unknown';
+  reason:
+    'reachable' | 'equivalent-patch' | 'no-effective-change' | 'applies' | 'conflict' | 'error';
+  baseParent?: string; // first parent; absent for a root commit
+  isMerge: boolean;
+  files: Array<{
+    path: string;
+    oldPath?: string;
+    outcome: 'applies' | 'already-present' | 'conflict';
+  }>;
+  equivalentCommits: CommitInfo[]; // same patch-id, downstream only
+  conflicts: Array<{ path: string; startLine: number; lines: string[] }>; // marker excerpts
+  messages: string[]; // git's, e.g. "CONFLICT (content): Merge conflict in x"
+  detail?: string;
+}
+```
+
+**404** when the commit isn't in the upstream repository.
+
+### `POST /api/upstream/patch`
+
+Body: `{ upstream, user, sessionId, commit }`. The commit's files and hunks against its first parent (`CommitPatch`: `files[]` with `oldPath`, `newPath`, `status`, `binary`, `hunks`; `truncated`).
 
 ## Other
 

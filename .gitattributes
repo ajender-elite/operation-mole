@@ -5,3 +5,6 @@
 # Example data must stay byte-exact (CRLF, trailing spaces, binary): never normalize it.
 examples/left/** -text
 examples/right/** -text
+
+# The pinned public test seed (a git bundle) is binary.
+*.bundle binary

@@ -4,16 +4,21 @@ import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import {
   AddRepoRequestSchema,
+  ApplicabilityRequestSchema,
+  CommitPatchRequestSchema,
   CreateSessionRequestSchema,
   DirectoryCompareRequestSchema,
   FileCompareQuerySchema,
   SessionIdSchema,
+  SnapshotFileDiffRequestSchema,
+  UpstreamCommitsRequestSchema,
   UsernameSchema,
   type DefaultsResponse,
   type FileCompareResult,
   type SessionDetail,
+  type UpstreamCommitList,
 } from '@om/shared';
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z, type ZodError, type ZodType } from 'zod';
 import { compareDirectories } from './compare/compare-directories.ts';
 import { filesEqual } from './compare/files-equal.ts';
@@ -21,7 +26,10 @@ import { CompareInputError, ConflictError, NotFoundError } from './errors.ts';
 import { readFileForDiff } from './files/read-file.ts';
 import { GitService } from './git/git-service.ts';
 import { RepoManager, toInfo } from './git/repo-manager.ts';
+import { annotateRenames } from './snapshot/annotate-renames.ts';
+import { SnapshotAnalyzer } from './snapshot/snapshot-analyzer.ts';
 import { Store } from './store/store.ts';
+import { UpstreamAnalyzer } from './upstream/upstream-analyzer.ts';
 
 /** Options for {@link buildApp}. All are optional; tests rely on the defaults. */
 export type AppOptions = {
@@ -37,12 +45,26 @@ export type AppOptions = {
   dataDir?: string;
   /** URL schemes allowed for cloning (default: https, ssh). */
   allowedProtocols?: string[];
+  /** Where applicability analysis puts its temporary object directories. Default `<dataDir>/scratch`. */
+  scratchDir?: string;
 };
 
 /** Route parameters, validated like any other input. */
 const UserParamsSchema = z.object({ user: UsernameSchema });
 const SessionParamsSchema = z.object({ user: UsernameSchema, sessionId: SessionIdSchema });
 const RepoParamsSchema = SessionParamsSchema.extend({ repoId: z.string().min(1) });
+
+/**
+ * Aborted when the client goes away before the response is sent (navigated elsewhere,
+ * cancelled the query), so long git analysis stops instead of running for nobody.
+ */
+function abortOnDisconnect(reply: FastifyReply): AbortSignal {
+  const controller = new AbortController();
+  reply.raw.on('close', () => {
+    if (!reply.raw.writableFinished) controller.abort();
+  });
+  return controller.signal;
+}
 
 /** HTTP status carried by Fastify's own errors (e.g. 415 for a bad content type), else 500. */
 function statusCodeOf(error: unknown): number {
@@ -74,15 +96,18 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     dataDir = path.join(tmpdir(), `om-data-${crypto.randomUUID()}`),
     allowedProtocols,
   } = options;
+  const { scratchDir = path.join(dataDir, 'scratch') } = options;
   const app = Fastify({ logger: isLogging });
 
   mkdirSync(dataDir, { recursive: true });
   const store = new Store(path.join(dataDir, 'om.db'));
-  const repos = new RepoManager(
-    store,
-    new GitService(allowedProtocols ? { allowedProtocols } : {}),
-    dataDir,
-  );
+  const git = new GitService(allowedProtocols ? { allowedProtocols } : {});
+  const repos = new RepoManager(store, git, dataDir);
+  const snapshots = new SnapshotAnalyzer(git, {
+    maxTextBytes: maxTextFileBytes,
+    maxDiffLines: 20_000,
+  });
+  const upstream = new UpstreamAnalyzer(git, snapshots, { scratchDir });
   app.addHook('onClose', () => {
     store.close();
   });
@@ -170,6 +195,16 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       rightLabel: r.label,
       ignoreAtRoot: { left: l.ignore, right: r.ignore },
     });
+    if (l.snapshot) result.leftSnapshot = { commit: l.snapshot.commit, ref: l.snapshot.ref };
+    if (r.snapshot) result.rightSnapshot = { commit: r.snapshot.commit, ref: r.snapshot.ref };
+    if (l.snapshot && r.snapshot) {
+      try {
+        annotateRenames(result.root, await snapshots.renames(l.snapshot, r.snapshot));
+      } catch (err) {
+        // Renames are extra information; the comparison itself stands without them.
+        request.log.warn({ err }, 'rename detection failed');
+      }
+    }
     if (
       user !== undefined &&
       user !== '' &&
@@ -180,6 +215,53 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       store.recordComparison(sessionId, { left, right, leftLabel: l.label, rightLabel: r.label });
     }
     return result;
+  });
+
+  app.post('/api/snapshot/file-diff', async (request, reply) => {
+    const body = parse(SnapshotFileDiffRequestSchema, request.body);
+    const [l, r] = await Promise.all([
+      repos.resolveSnapshot(body.left, body.user, body.sessionId),
+      repos.resolveSnapshot(body.right, body.user, body.sessionId),
+    ]);
+    return await snapshots.fileDiff(
+      l,
+      r,
+      { leftPath: body.leftPath, rightPath: body.rightPath, isFullFile: body.fullFile },
+      abortOnDisconnect(reply),
+    );
+  });
+
+  app.post('/api/upstream/commits', async (request, reply): Promise<UpstreamCommitList> => {
+    const body = parse(UpstreamCommitsRequestSchema, request.body);
+    const [up, down] = await Promise.all([
+      repos.resolveSnapshot(body.upstream, body.user, body.sessionId),
+      repos.resolveSnapshot(body.downstream, body.user, body.sessionId),
+    ]);
+    const { commits, hasMore } = await upstream.commits(up, down, body, abortOnDisconnect(reply));
+    return {
+      upstream: { commit: up.commit, ref: up.ref },
+      downstream: { commit: down.commit, ref: down.ref },
+      upstreamLabel: up.label,
+      downstreamLabel: down.label,
+      commits,
+      hasMore,
+    };
+  });
+
+  app.post('/api/upstream/applicability', async (request, reply) => {
+    const body = parse(ApplicabilityRequestSchema, request.body);
+    const [up, down] = await Promise.all([
+      repos.resolveSnapshot(body.upstream, body.user, body.sessionId),
+      // Checked out so that, in a blob-less clone, downstream's file contents are local.
+      repos.resolveSnapshot(body.downstream, body.user, body.sessionId, { shouldCheckOut: true }),
+    ]);
+    return await upstream.applicability(up, down, body.commit, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/upstream/patch', async (request, reply) => {
+    const body = parse(CommitPatchRequestSchema, request.body);
+    const up = await repos.resolveSnapshot(body.upstream, body.user, body.sessionId);
+    return await upstream.patch(up, body.commit, abortOnDisconnect(reply));
   });
 
   app.get('/api/compare/files', async (request, reply) => {

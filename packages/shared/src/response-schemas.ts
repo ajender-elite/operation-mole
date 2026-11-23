@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import type {
+  ApplicabilityResult,
+  CommitInfo,
+  CommitPatch,
   CompareNode,
   DefaultsResponse,
   DirectoryCompareResult,
@@ -10,6 +13,9 @@ import type {
   RepoInfo,
   SessionDetail,
   SessionSummary,
+  SnapshotFileDiff,
+  SnapshotInfo,
+  UpstreamCommitList,
 } from './api.ts';
 import { SourceSchema } from './schemas.ts';
 
@@ -36,8 +42,16 @@ export const CompareNodeSchema: z.ZodType<CompareNode> = z.lazy(() =>
     right: EntryInfoSchema.exactOptional(),
     children: z.array(CompareNodeSchema).exactOptional(),
     error: z.string().exactOptional(),
+    renamedTo: z.string().exactOptional(),
+    renamedFrom: z.string().exactOptional(),
+    similarity: z.number().exactOptional(),
   }),
 );
+
+const SnapshotInfoSchema = z.object({
+  commit: z.string(),
+  ref: z.string(),
+}) satisfies z.ZodType<SnapshotInfo>;
 
 /** `POST /api/compare/directories`. */
 export const DirectoryCompareResultSchema = z.object({
@@ -53,6 +67,8 @@ export const DirectoryCompareResultSchema = z.object({
     onlyRight: z.number(),
     errors: z.number(),
   }),
+  leftSnapshot: SnapshotInfoSchema.exactOptional(),
+  rightSnapshot: SnapshotInfoSchema.exactOptional(),
 }) satisfies z.ZodType<DirectoryCompareResult>;
 
 const FileContentSchema = z.object({
@@ -115,3 +131,110 @@ export const SessionDetailSchema = z.object({
   repos: z.array(RepoInfoSchema),
   recent: z.array(RecentComparisonSchema),
 }) satisfies z.ZodType<SessionDetail>;
+
+const CommitInfoSchema = z.object({
+  sha: z.string(),
+  subject: z.string(),
+  authorName: z.string(),
+  authorEmail: z.string(),
+  authorDate: z.string(),
+  committerName: z.string(),
+  committerEmail: z.string(),
+  commitDate: z.string(),
+}) satisfies z.ZodType<CommitInfo>;
+
+const DiffHunkSchema = z.object({
+  header: z.string(),
+  leftStart: z.number(),
+  leftCount: z.number(),
+  rightStart: z.number(),
+  rightCount: z.number(),
+  lines: z.array(
+    z.object({
+      kind: z.enum(['context', 'removed', 'added']),
+      text: z.string(),
+      leftLine: z.number().exactOptional(),
+      rightLine: z.number().exactOptional(),
+      commit: z.string().exactOptional(),
+    }),
+  ),
+});
+
+/** `POST /api/snapshot/file-diff`. */
+export const SnapshotFileDiffSchema = z.object({
+  leftCommit: z.string(),
+  rightCommit: z.string(),
+  leftPath: z.string().exactOptional(),
+  rightPath: z.string().exactOptional(),
+  content: z.enum(['text', 'identical', 'binary', 'too-large']),
+  hunks: z.array(DiffHunkSchema),
+  commits: z.array(
+    CommitInfoSchema.extend({
+      inLeft: z.boolean().nullable(),
+      inRight: z.boolean().nullable(),
+    }),
+  ),
+  attributionNote: z.string().exactOptional(),
+  truncated: z.boolean().exactOptional(),
+}) satisfies z.ZodType<SnapshotFileDiff>;
+
+/** `POST /api/upstream/commits`. */
+export const UpstreamCommitListSchema = z.object({
+  upstream: SnapshotInfoSchema,
+  downstream: SnapshotInfoSchema,
+  upstreamLabel: z.string(),
+  downstreamLabel: z.string(),
+  commits: z.array(
+    CommitInfoSchema.extend({
+      parents: z.array(z.string()),
+      reachableFromDownstream: z.boolean(),
+    }),
+  ),
+  hasMore: z.boolean(),
+}) satisfies z.ZodType<UpstreamCommitList>;
+
+/** `POST /api/upstream/applicability`. */
+export const ApplicabilityResultSchema = z.object({
+  commit: z.string(),
+  downstreamCommit: z.string(),
+  status: z.enum(['clean', 'represented', 'conflict', 'unknown']),
+  reason: z.enum([
+    'reachable',
+    'equivalent-patch',
+    'no-effective-change',
+    'applies',
+    'conflict',
+    'error',
+  ]),
+  baseParent: z.string().exactOptional(),
+  isMerge: z.boolean(),
+  files: z.array(
+    z.object({
+      path: z.string(),
+      oldPath: z.string().exactOptional(),
+      outcome: z.enum(['applies', 'already-present', 'conflict']),
+    }),
+  ),
+  equivalentCommits: z.array(CommitInfoSchema),
+  conflicts: z.array(
+    z.object({ path: z.string(), startLine: z.number(), lines: z.array(z.string()) }),
+  ),
+  messages: z.array(z.string()),
+  detail: z.string().exactOptional(),
+}) satisfies z.ZodType<ApplicabilityResult>;
+
+/** `POST /api/upstream/patch`. */
+export const CommitPatchSchema = z.object({
+  commit: z.string(),
+  baseParent: z.string().exactOptional(),
+  files: z.array(
+    z.object({
+      oldPath: z.string().exactOptional(),
+      newPath: z.string().exactOptional(),
+      status: z.enum(['added', 'deleted', 'modified', 'renamed', 'other']),
+      binary: z.boolean(),
+      hunks: z.array(DiffHunkSchema),
+    }),
+  ),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<CommitPatch>;

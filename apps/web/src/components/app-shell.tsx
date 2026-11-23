@@ -1,6 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { ChevronRight, FileDiff, FlaskConical, FolderTree, LayoutDashboard } from 'lucide-react';
+import {
+  ChevronRight,
+  FileDiff,
+  FolderTree,
+  GitPullRequestArrow,
+  LayoutDashboard,
+} from 'lucide-react';
 import type { JSX } from 'react';
 import { Link, NavLink, Outlet, useMatch } from 'react-router';
 import { getSession } from '../lib/api.ts';
@@ -70,7 +76,12 @@ function SessionNav({ user, sessionId }: { user: string; sessionId: string }) {
     { to: sessionPath(user, sessionId), label: 'Overview', icon: LayoutDashboard, end: true },
     { to: sessionPath(user, sessionId, 'folders'), label: 'Folders', icon: FolderTree, end: false },
     { to: sessionPath(user, sessionId, 'files'), label: 'Files', icon: FileDiff, end: false },
-    { to: sessionPath(user, sessionId, 'lab'), label: 'Lab', icon: FlaskConical, end: false },
+    {
+      to: sessionPath(user, sessionId, 'upstream'),
+      label: 'Upstream',
+      icon: GitPullRequestArrow,
+      end: false,
+    },
   ];
   return (
     <nav aria-label="Main" className="flex gap-1">

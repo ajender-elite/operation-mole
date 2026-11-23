@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -23,7 +23,7 @@ describe('AppShell', () => {
   });
 
   it('shows the user, session and session pages inside a session', async () => {
-    renderApp(`/u/${USER}/s/s1/lab`);
+    renderApp(`/u/${USER}/s/s1/upstream`);
     const context = screen.getByRole('navigation', { name: 'Context' });
     expect(within(context).getByRole('link', { name: USER })).toHaveAttribute('href', `/u/${USER}`);
     expect(await within(context).findByText('Release review')).toBeInTheDocument();
@@ -41,7 +41,18 @@ describe('AppShell', () => {
       'href',
       `/u/${USER}/s/s1/files`,
     );
-    expect(within(nav).getByRole('link', { name: 'Lab' })).toHaveAttribute('aria-current', 'page');
+    expect(within(nav).getByRole('link', { name: 'Upstream' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  it('sends old Lab links to Upstream, keeping the query', async () => {
+    const app = renderApp(`/u/${USER}/s/s1/lab?limit=50`);
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`/u/${USER}/s/s1/upstream`);
+    });
+    expect(app.search().get('limit')).toBe('50');
   });
 
   it('has no session navigation outside a session', () => {

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,64 @@ import path from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { compareNames } from '../compare/sort.ts';
 import { CompareInputError, errorMessage } from '../errors.ts';
+
+/** Output of {@link GitService.run}. */
+export type GitRun = {
+  stdout: string;
+  exitCode: number;
+};
+
+/** Options for {@link GitService.run}. */
+export type GitRunOptions = {
+  /** Extra environment for this command (e.g. an object view's alternates). */
+  env?: Record<string, string>;
+  /** Kills git when aborted; the call then rejects with an `AbortError`. */
+  signal?: AbortSignal;
+  /** Exit codes that are answers rather than failures (e.g. 1 from `merge-base --is-ancestor`). */
+  okExitCodes?: readonly number[];
+  /** Fail instead of buffering more than this much output. Default 64 MB. */
+  maxBytes?: number;
+};
+
+/** A git command that exited with an unexpected code. */
+export class GitCommandError extends Error {
+  override name = 'GitCommandError';
+  readonly exitCode: number;
+  constructor(message: string, exitCode: number) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
+
+/**
+ * Settings passed to every analysis command so that git's output has the shape OM parses,
+ * whatever the machine's config says. They only affect formatting, never credentials.
+ */
+const ANALYSIS_ARGS = [
+  // Paths from requests are literal paths, never pathspec magic like `:(exclude)`.
+  '--literal-pathspecs',
+  '-c',
+  'core.quotePath=false',
+  '-c',
+  'diff.noprefix=false',
+  '-c',
+  'diff.mnemonicPrefix=false',
+  '-c',
+  'color.ui=never',
+  '-c',
+  'log.showSignature=false',
+  // Lazy fetches in a blob-less clone each add a pack; automatic housekeeping would then
+  // repack under other analysis processes reading the same clone.
+  '-c',
+  'gc.auto=0',
+  '-c',
+  'maintenance.auto=false',
+];
+
+/** Object ids per `git fetch` when prefetching (keeps the command line short on Windows). */
+const PREFETCH_BATCH = 500;
+
+const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Options for {@link GitService}. */
 export type GitServiceOptions = {
@@ -140,6 +198,166 @@ export class GitService {
     this.#env = gitEnvironment(process.env, this.#allowed, configuredSshCommand());
   }
 
+  /**
+   * Runs a read-only analysis command (diff, blame, log, merge-tree) and returns its output.
+   * Unlike simple-git this exposes the exit code, extra environment and an abort signal,
+   * which analysis needs. No shell is involved and the environment is the same allowlist.
+   *
+   * @throws GitCommandError when git exits with a code not in `okExitCodes` (default `[0]`).
+   */
+  async run(cwd: string, args: readonly string[], options: GitRunOptions = {}): Promise<GitRun> {
+    const { stdout, exitCode } = await this.runBuffer(cwd, args, options);
+    return { stdout: stdout.toString('utf8'), exitCode };
+  }
+
+  /** Like {@link run}, but returns raw bytes (for file contents). */
+  runBuffer(
+    cwd: string,
+    args: readonly string[],
+    options: GitRunOptions = {},
+  ): Promise<{ stdout: Buffer; exitCode: number }> {
+    const { env = {}, signal, okExitCodes = [0], maxBytes = DEFAULT_MAX_BYTES } = options;
+    return new Promise((resolve, reject) => {
+      const child = spawn('git', [...ANALYSIS_ARGS, ...args], {
+        cwd,
+        env: { ...this.#env, GIT_OPTIONAL_LOCKS: '0', ...env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        ...(signal ? { signal } : {}),
+      });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let stderr = '';
+      let isTooLarge = false;
+      child.stdout.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          isTooLarge = true;
+          child.kill();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        if (stderr.length < 16_384) stderr += chunk.toString('utf8');
+      });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (signal?.aborted === true) return; // 'error' already rejected with an AbortError
+        if (isTooLarge) {
+          reject(
+            new GitCommandError(`git ${args[0] ?? ''}: output larger than ${maxBytes} bytes`, -1),
+          );
+          return;
+        }
+        const exitCode = code ?? -1;
+        if (!okExitCodes.includes(exitCode)) {
+          reject(
+            new GitCommandError(
+              `git ${args[0] ?? ''}: ${gitError(stderr || `exit code ${exitCode}`)}`,
+              exitCode,
+            ),
+          );
+          return;
+        }
+        resolve({ stdout: Buffer.concat(chunks), exitCode });
+      });
+    });
+  }
+
+  /**
+   * The full commit SHA for `rev`: a branch, then a tag, then a (possibly abbreviated) commit id.
+   * Branches win over tags with the same name, as they do for comparisons everywhere else in OM.
+   *
+   * @throws CompareInputError when nothing matches.
+   */
+  async resolveCommit(repoDir: string, rev: string): Promise<string> {
+    const candidates = [`refs/heads/${rev}`, `refs/tags/${rev}`];
+    if (/^[0-9a-f]{4,64}$/i.test(rev)) candidates.push(rev.toLowerCase());
+    const git = this.#git(repoDir);
+    for (const candidate of rev.startsWith('-') ? [] : candidates) {
+      const sha = (
+        await git.raw(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]).catch(() => '')
+      ).trim();
+      if (sha !== '') return sha;
+    }
+    throw new CompareInputError(`Branch "${rev}" not found. Try fetching the latest.`);
+  }
+
+  /** Whether a clone is blob-less (its origin is a promisor remote), cached per clone. */
+  readonly #isPartial = new Map<string, Promise<boolean>>();
+
+  async #isPartialClone(repoDir: string): Promise<boolean> {
+    let answer = this.#isPartial.get(repoDir);
+    if (answer === undefined) {
+      answer = this.run(repoDir, ['config', '--get', 'remote.origin.promisor'], {
+        okExitCodes: [0, 1],
+      }).then(
+        ({ stdout }) => stdout.trim() === 'true',
+        () => false,
+      );
+      this.#isPartial.set(repoDir, answer);
+    }
+    return await answer;
+  }
+
+  /**
+   * In a blob-less clone, downloads in one request the file contents that `revs` (limited to
+   * `paths`) need and the clone doesn't have yet. Otherwise git fetches each one on demand:
+   * for `git blame` over a long history that is hundreds of round trips. A no-op for full
+   * clones. Failures are ignored, since git still fetches lazily when it needs an object.
+   *
+   * @param isWalking - include history (`rev-list`); false for just these commits' trees.
+   */
+  async prefetchMissing(
+    repoDir: string,
+    revs: readonly string[],
+    paths: readonly string[],
+    { isWalking = true, signal }: { isWalking?: boolean; signal?: AbortSignal } = {},
+  ): Promise<void> {
+    if (paths.length === 0 || !(await this.#isPartialClone(repoDir))) return;
+    const opt = signal ? { signal } : {};
+    try {
+      const { stdout } = await this.run(
+        repoDir,
+        [
+          'rev-list',
+          '--objects',
+          '--missing=print',
+          ...(isWalking ? [] : ['--no-walk']),
+          ...revs,
+          '--',
+          ...paths,
+        ],
+        opt,
+      );
+      const missing = stdout
+        .split('\n')
+        .filter((line) => line.startsWith('?'))
+        .map((line) => line.slice(1).trim());
+      for (let i = 0; i < missing.length; i += PREFETCH_BATCH) {
+        await this.run(
+          repoDir,
+          [
+            '-c',
+            'fetch.negotiationAlgorithm=noop',
+            'fetch',
+            '--quiet',
+            '--no-tags',
+            '--no-write-fetch-head',
+            '--recurse-submodules=no',
+            '--filter=blob:none',
+            'origin',
+            ...missing.slice(i, i + PREFETCH_BATCH),
+          ],
+          opt,
+        );
+      }
+    } catch (err) {
+      if (signal?.aborted === true) throw err;
+    }
+  }
+
   #git(dir: string): SimpleGit {
     return simpleGit({ baseDir: dir, allowEnvironment: GIT_ENV }).env(this.#env);
   }
@@ -212,18 +430,13 @@ export class GitService {
     return await this.branches(dir);
   }
 
-  /** Ensures `worktreeDir` holds the current tip of `branch`; returns the folder. */
+  /**
+   * Ensures `worktreeDir` holds the commit `branch` resolves to (a branch tip, a tag or a
+   * commit; see {@link resolveCommit}); returns the folder.
+   */
   async checkout(repoDir: string, branch: string, worktreeDir: string): Promise<string> {
     const repo = this.#git(repoDir);
-    let sha: string;
-    try {
-      sha = (
-        await repo.raw(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`])
-      ).trim();
-    } catch {
-      sha = '';
-    }
-    if (!sha) throw new CompareInputError(`Branch "${branch}" not found. Try fetching the latest.`);
+    const sha = await this.resolveCommit(repoDir, branch);
 
     if (existsSync(worktreeDir)) {
       const wt = this.#git(worktreeDir);

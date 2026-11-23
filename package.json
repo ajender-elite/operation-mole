@@ -18,6 +18,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:remote": "vitest run --config apps/server/vitest.remote.config.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
     "postinstall": "node scripts/ensure-example-dirs.ts"
   },

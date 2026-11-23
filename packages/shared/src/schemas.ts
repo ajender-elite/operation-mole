@@ -37,11 +37,17 @@ export const AddRepoRequestSchema = z.object({
 export type AddRepoRequest = z.infer<typeof AddRepoRequestSchema>;
 
 const PathSourceSchema = z.object({ type: z.literal('path'), path: absolutePath });
-const GitSourceSchema = z.object({
+/**
+ * A snapshot of a cloned repo. `branch` is usually a branch name; a tag or a full or
+ * abbreviated commit SHA also works, which pins the snapshot to an exact commit.
+ */
+export const GitSourceSchema = z.object({
   type: z.literal('git'),
   repoId: z.string().min(1, 'Choose a repository'),
   branch: z.string().trim().min(1, 'Choose a branch'),
 });
+/** See {@link GitSourceSchema}. */
+export type GitSource = z.infer<typeof GitSourceSchema>;
 
 /** One side of a folder comparison: a local folder or a branch of a cloned repo. */
 export const SourceSchema = z.discriminatedUnion('type', [PathSourceSchema, GitSourceSchema]);
@@ -74,3 +80,82 @@ export const FileCompareQuerySchema = z
   .refine((q) => q.left !== undefined || q.right !== undefined, 'Provide at least one file path');
 /** See {@link FileCompareQuerySchema}. */
 export type FileCompareQuery = z.infer<typeof FileCompareQuerySchema>;
+
+/**
+ * A path inside a snapshot: POSIX, relative, no `.`/`..` segments. Git reads it literally
+ * (never as pathspec magic).
+ */
+export const RepoPathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(
+    (p) =>
+      !p.startsWith('/') &&
+      !p.includes('\\') &&
+      !p.includes('\0') &&
+      p.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
+    'Invalid path in repository',
+  );
+
+/** A full commit id (SHA-1 or SHA-256). */
+export const CommitIdSchema = z
+  .string()
+  .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, 'Expected a full commit SHA');
+
+const SessionFieldsSchema = z.object({ user: UsernameSchema, sessionId: SessionIdSchema });
+
+/**
+ * Body of `POST /api/snapshot/file-diff`: one file between two git snapshots. Give both paths
+ * for a modified or renamed file, or one of them for a file that exists on one side only.
+ */
+export const SnapshotFileDiffRequestSchema = SessionFieldsSchema.extend({
+  left: GitSourceSchema,
+  right: GitSourceSchema,
+  leftPath: RepoPathSchema.optional(),
+  rightPath: RepoPathSchema.optional(),
+  /** Show the whole file as context instead of 3 lines around each change. */
+  fullFile: z.boolean().default(false),
+}).refine(
+  (r) => r.leftPath !== undefined || r.rightPath !== undefined,
+  'Provide leftPath, rightPath or both',
+);
+/** What clients send. See {@link SnapshotFileDiffRequestSchema}. */
+export type SnapshotFileDiffRequest = z.input<typeof SnapshotFileDiffRequestSchema>;
+
+const UpstreamPairSchema = SessionFieldsSchema.extend({
+  /** The snapshot whose history is examined (Base in the UI). */
+  upstream: GitSourceSchema,
+  /** The snapshot the commits are applied to (Target in the UI). */
+  downstream: GitSourceSchema,
+});
+
+/** Body of `POST /api/upstream/commits`: which upstream commits to list. */
+export const UpstreamCommitsRequestSchema = UpstreamPairSchema.extend({
+  /** At most this many commits, newest first. */
+  limit: z.number().int().min(1).max(200).default(20),
+  /** Only commits committed on or after this day (`YYYY-MM-DD`, `git log --since`). */
+  since: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
+    .optional(),
+  /** Follow only first parents (the mainline of merges). */
+  firstParent: z.boolean().default(false),
+  /** Leave out commits that downstream already contains (`upstream ^downstream`). */
+  hideReachable: z.boolean().default(false),
+});
+/** What clients send. See {@link UpstreamCommitsRequestSchema}. */
+export type UpstreamCommitsRequest = z.input<typeof UpstreamCommitsRequestSchema>;
+
+/** Body of `POST /api/upstream/applicability`: apply one upstream commit to the downstream snapshot. */
+export const ApplicabilityRequestSchema = UpstreamPairSchema.extend({ commit: CommitIdSchema });
+/** What clients send. See {@link ApplicabilityRequestSchema}. */
+export type ApplicabilityRequest = z.input<typeof ApplicabilityRequestSchema>;
+
+/** Body of `POST /api/upstream/patch`: a commit's changes against its first parent. */
+export const CommitPatchRequestSchema = SessionFieldsSchema.extend({
+  upstream: GitSourceSchema,
+  commit: CommitIdSchema,
+});
+/** What clients send. See {@link CommitPatchRequestSchema}. */
+export type CommitPatchRequest = z.input<typeof CommitPatchRequestSchema>;
