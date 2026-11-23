@@ -1,11 +1,55 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build output and generated files
 dist/
 releases/
 coverage/
 *.tsbuildinfo
-.DS_Store
-Thumbs.db
-desktop.ini
-.playwright-mcp/
 .vite/
+vite.config.ts.timestamp-*
+.eslintcache
+.cache/
+
+# Local data: database and clones (delete to reset)
 .data/
+
+# Environment: keep .env.example, never real values
+.env
+.env.*
+!.env.example
+
+# Logs and debug output
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Editors and IDEs (shared settings in .vscode/ stay committed)
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Tools
+.playwright-mcp/
+.claude/settings.local.json
+*.tmp
+*.temp
+
+# The example data is byte-exact test input: it intentionally contains files that the rules
+# above would ignore (.env, *.log). Never ignore anything under examples/.
+!/examples/**
