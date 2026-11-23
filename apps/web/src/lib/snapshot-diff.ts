@@ -16,18 +16,25 @@ export type SnapshotPair = {
 const KEY = 'snapshot-file-diff';
 
 /**
- * The query for one file's snapshot diff. Directory attribution and the file view share it,
- * so whichever runs first fills the cache for the other.
+ * The query for one file's snapshot diff. Directory attribution and an explained file view share
+ * it, so whichever runs first fills the cache for the other. With `isAttributed: false` the
+ * server skips git blame: the plain difference, shown before anyone asks what accounts for it.
  */
 export function fileDiffQuery(
   pair: SnapshotPair,
   target: DiffTarget,
   isFullFile = false,
+  isAttributed = true,
 ): ReturnType<typeof buildFileDiffQuery> {
-  return buildFileDiffQuery(pair, target, isFullFile);
+  return buildFileDiffQuery(pair, target, isFullFile, isAttributed);
 }
 
-const buildFileDiffQuery = (pair: SnapshotPair, target: DiffTarget, isFullFile: boolean) =>
+const buildFileDiffQuery = (
+  pair: SnapshotPair,
+  target: DiffTarget,
+  isFullFile: boolean,
+  isAttributed: boolean,
+) =>
   queryOptions({
     queryKey: [
       KEY,
@@ -38,6 +45,7 @@ const buildFileDiffQuery = (pair: SnapshotPair, target: DiffTarget, isFullFile: 
       target.leftPath ?? null,
       target.rightPath ?? null,
       isFullFile,
+      isAttributed,
     ] as const,
     queryFn: ({ signal }) =>
       snapshotFileDiff(
@@ -49,6 +57,7 @@ const buildFileDiffQuery = (pair: SnapshotPair, target: DiffTarget, isFullFile: 
           ...(target.leftPath === undefined ? {} : { leftPath: target.leftPath }),
           ...(target.rightPath === undefined ? {} : { rightPath: target.rightPath }),
           fullFile: isFullFile,
+          attribute: isAttributed,
         },
         signal,
       ),
@@ -60,6 +69,8 @@ function cachedDiffs(client: QueryClient, pair: SnapshotPair): AttributionInput 
   const byKey = new Map<string, SnapshotFileDiff>();
   for (const query of client.getQueryCache().findAll({ queryKey: prefix })) {
     if (query.state.status !== 'success') continue;
+    // Only attributed diffs say which commits account for what.
+    if (query.queryKey[8] !== true) continue;
     // Every query under this key prefix is a fileDiffQuery, so its data is a SnapshotFileDiff.
     const diff = client.getQueryData<SnapshotFileDiff>(query.queryKey);
     if (diff === undefined) continue;

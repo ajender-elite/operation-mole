@@ -3,6 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { dirResult } from '../test/fixtures.ts';
 import { USER, repoInfo, sessionSummary } from '../test/handlers.ts';
 import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
@@ -43,6 +44,10 @@ beforeEach(() => {
       repos = [...repos, repo];
       return HttpResponse.json(repo, { status: 201 });
     }),
+    http.post('*/api/compare/directories', () => HttpResponse.json(dirResult)),
+    http.post('*/api/upstream/commits', () =>
+      HttpResponse.json({ message: 'not needed here' }, { status: 400 }),
+    ),
     http.post('*/api/users/:user/sessions/:sessionId/repos/:repoId/fetch', () => {
       repos = repos.map((r) => ({ ...r, branches: [...r.branches, 'hotfix'] }));
       return HttpResponse.json(repos[0]);
@@ -53,16 +58,92 @@ beforeEach(() => {
 const OVERVIEW = `/u/${USER}/s/s1`;
 
 describe('SessionOverviewPage', () => {
-  it('lists recent comparisons as links that reopen them', async () => {
+  it('with no repository, asks for one and offers nothing else', async () => {
+    repos = [];
+    recent = [];
     renderApp(OVERVIEW);
-    const list = await screen.findByRole('list', { name: /recent comparisons/i });
-    const links = within(list).getAllByRole('link');
-    expect(links[0]).toHaveAccessibleName(/app @ main.*app @ dev/);
-    expect(links[0]).toHaveAttribute(
-      'href',
-      `${OVERVIEW}/folders?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev`,
+    expect(await screen.findByRole('heading', { name: 'Add a repository' })).toBeInTheDocument();
+    expect(screen.getByLabelText(/repository url/i)).toHaveFocus();
+    expect(screen.queryByRole('region', { name: 'Compare' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/recent comparisons/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /compare/i })).not.toBeInTheDocument();
+  });
+
+  it('reveals comparing once a repository is added', async () => {
+    const user = userEvent.setup();
+    repos = [];
+    recent = [];
+    renderApp(OVERVIEW);
+    await user.type(
+      await screen.findByLabelText(/repository url/i),
+      'https://github.com/acme/lib.git',
     );
-    expect(links[1]).toHaveAttribute('href', `${OVERVIEW}/folders?left=%2Fa&right=%2Fb`);
+    await user.click(screen.getByRole('button', { name: /add repository/i }));
+    await waitFor(() => {
+      expect(added).toEqual(['https://github.com/acme/lib.git']);
+    });
+    const compare = await screen.findByRole('region', { name: 'Compare' });
+    expect(within(compare).getByLabelText('Base repository')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: /repositories/i })).toHaveTextContent('lib');
+  });
+
+  it('compares the chosen snapshots in a Folder Compare tab', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(OVERVIEW);
+    const compare = await screen.findByRole('region', { name: 'Compare' });
+    // Upstream analysis is offered only once there is something to analyze.
+    expect(within(compare).queryByRole('button', { name: /upstream/i })).not.toBeInTheDocument();
+    for (const [side, branch] of [
+      ['Base', 'main'],
+      ['Target', 'dev'],
+    ] as const) {
+      await user.selectOptions(within(compare).getByLabelText(`${side} repository`), 'r1');
+      await user.selectOptions(within(compare).getByLabelText(`${side} branch`), branch);
+    }
+    expect(within(compare).getByRole('button', { name: /check upstream commits/i })).toBeEnabled();
+    await user.click(within(compare).getByRole('button', { name: /compare folders/i }));
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`${OVERVIEW}/folders`);
+    });
+    expect(app.search().get('leftBranch')).toBe('main');
+    expect(app.search().get('rightBranch')).toBe('dev');
+    expect(screen.getByRole('tab', { name: /app @ main ↔ app @ dev/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('uses the same choice for upstream analysis', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(OVERVIEW);
+    const compare = await screen.findByRole('region', { name: 'Compare' });
+    for (const [side, branch] of [
+      ['Base', 'main'],
+      ['Target', 'dev'],
+    ] as const) {
+      await user.selectOptions(within(compare).getByLabelText(`${side} repository`), 'r1');
+      await user.selectOptions(within(compare).getByLabelText(`${side} branch`), branch);
+    }
+    await user.click(within(compare).getByRole('button', { name: /check upstream commits/i }));
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`${OVERVIEW}/upstream`);
+    });
+    expect(app.search().get('leftBranch')).toBe('main');
+  });
+
+  it('reopens recent git comparisons, hiding folder ones', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(OVERVIEW);
+    const list = await screen.findByRole('list', { name: /recent comparisons/i });
+    const items = within(list).getAllByRole('button');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveAccessibleName(/app @ main.*app @ dev/);
+    await user.click(items[0] ?? list);
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`${OVERVIEW}/folders`);
+    });
+    expect(app.search().get('rightBranch')).toBe('dev');
   });
 
   it('lists the session’s repos with their branches', async () => {
@@ -80,29 +161,19 @@ describe('SessionOverviewPage', () => {
     expect(await screen.findByText(/3 branches/i)).toBeInTheDocument();
   });
 
-  it('adds a repo by URL', async () => {
+  it('adds another repo on request', async () => {
     const user = userEvent.setup();
     renderApp(OVERVIEW);
-    await user.type(
-      await screen.findByLabelText(/repository url/i),
-      'https://github.com/acme/lib.git',
-    );
+    await screen.findByRole('list', { name: /repositories/i });
+    expect(screen.queryByLabelText(/^repository url/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /add another/i }));
+    await user.type(screen.getByLabelText(/^repository url/i), 'https://github.com/acme/lib.git');
     await user.click(screen.getByRole('button', { name: /add repository/i }));
     await waitFor(() => {
       expect(added).toEqual(['https://github.com/acme/lib.git']);
     });
-    expect(await screen.findByText('lib')).toBeInTheDocument();
-  });
-
-  it('shows empty states with a way to start', async () => {
-    repos = [];
-    recent = [];
-    renderApp(OVERVIEW);
-    expect(await screen.findByText(/no comparisons yet/i)).toBeInTheDocument();
-    expect(screen.getByText(/no repositories yet/i)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /start a comparison/i })).toHaveAttribute(
-      'href',
-      `${OVERVIEW}/folders`,
-    );
+    expect(
+      await within(screen.getByRole('list', { name: /repositories/i })).findByText('lib'),
+    ).toBeInTheDocument();
   });
 });

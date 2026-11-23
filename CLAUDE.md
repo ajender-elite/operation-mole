@@ -7,7 +7,7 @@ Guidance for Claude (and other coding agents) working in this repo. Read this fi
 **OM (Operation Mole)** is a local web app for comparing a **Base** and a **Target**: two folders, or two git branches cloned into a per-user **session**. It shows what is identical, different, or present on only one side, and has a Monaco file diff.
 
 - Users identify by **username only** (no passwords). Sessions belong to a user. Each session has its own cloned repos and a list of recent comparisons.
-- Experiences: **Folders** (tree compare; for git snapshots also in-place git hunks and divergence attribution), **Files** (Monaco diff), **Upstream** (commit applicability). The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
+- Experiences, each in its own **tab** inside the session (`components/session-workspace.tsx`): **Overview** (add a repo first; then compare, recent, repos), **Folder Compare** (what differs), **File Compare** (one file at pinned commits), **Upstream** (commit applicability). Show only what the current state can use; attribution ("Explain difference") is computed only on request, scoped to what the user is looking at. The UI compares git repositories only: each side is a repo URL (sides may use different remotes) plus an explicitly chosen branch. The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
 
 ## Commands
 
@@ -20,6 +20,7 @@ pnpm test:coverage         # tests + 80% line/branch thresholds
 pnpm test:remote           # network: checks the pinned public seed against GitHub (not part of check)
 pnpm vitest run --project server test/git-service.test.ts   # one file
 pnpm build && pnpm start   # production: one server on :5181
+pnpm release               # releases/om-<version>/ + .tar.gz: runs anywhere with Node 26+ and git, no install or build
 ```
 
 Rules for all code are in [CONTRIBUTING.md](CONTRIBUTING.md) (TypeScript guidelines, plus OM's documented deviations). Read it before writing code.
@@ -41,7 +42,7 @@ apps/server       Fastify. Node runs .ts directly (type stripping). No build ste
   src/store/store.ts    node:sqlite: users, sessions, repos, recent comparisons
   test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts; scenario.ts builds deterministic histories on the pinned seed in test/seed/).
 apps/web          React 19 + Vite + Tailwind v4 + TanStack Query + React Router + Monaco
-  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/files|/upstream] (/lab redirects)
+  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/file|/upstream] inside SessionWorkspace tabs (/lab → upstream, /files → folders)
   src/components/, src/pages/   kebab-case files (app-shell.tsx), PascalCase components (AppShell)
   src/lib/              api client (parses every response with the shared schemas), sources (URL⇄Source), session hooks, tree, theme, format
   src/test/             MSW server + handlers, renderApp(url) helper
@@ -81,7 +82,7 @@ docs/             architecture, API, data model, git, comparison rules, frontend
   - A **file and a folder with the same name** are listed as two separate one-sided entries, never `modified`.
 - **Sort order:** all folders first, then files. Within each group, `compareNames` in `apps/server/src/compare/sort.ts`: `Intl.Collator('en', {numeric: true, sensitivity: 'base'})`, with code-point order as the tie-break. The server sorts; the UI never re-sorts.
 - **Colors:** green = only in base, blue = only in target, orange = different, red = error. Tokens are in `apps/web/src/index.css`.
-- **URL is the state:** session in the path; each side as `left=/abs/path` or `leftRepo=<id>&leftBranch=<b>` (same for `right`); current folder as `path=`. Reload must restore the exact view.
+- **URL is the state:** session in the path; each side as `leftRepo=<id>&leftBranch=<b>` (same for `right`; the UI ignores `left=/abs/path`); current folder as `path=`; what is explained as `explain=` (`/`, `dir/`, `file`). Each tab has its own URL; the active tab's is the browser's. Reload must restore the exact view.
 - **Git:**
   - The system git runs through simple-git. Each repo is a bare `--filter=blob:none` clone per session, with one worktree per branch.
   - `.git` is ignored at the root of git sides.
@@ -114,6 +115,7 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 - **No relative URLs in `fetch`:** jsdom's `fetch` rejects them, so the API client builds absolute URLs from `window.location.origin`.
 - **Blob-less clones and blame:** blaming a file in a `--filter=blob:none` clone fetches its history one object at a time unless prefetched. Keep `prefetchMissing` before blame and merge-tree, and `gc.auto=0` on analysis (lazy fetches add packs; auto-repack under concurrent readers broke blame on a real repo).
 - **Test scenarios serve partial clones** (`uploadpack.allowFilter`), so OM's test clones are blob-less like GitHub's. A test that reads objects directly from OM's clone must expect missing blobs.
+- **Releases (`scripts/release.ts`):** Node won't strip types inside `node_modules`, so the release keeps `packages/shared/src` and `node_modules/@om/shared` is a JS re-export of it. Dependencies come from `pnpm deploy --prod` with `node-linker=hoisted` (flat, no symlinks); the script fails on symlinks or native addons, which would make the archive OS-specific. It runs pnpm via `npm_execpath` (a JS file or pnpm's standalone executable), never a `.cmd` shim.
 - **Local data:** `.data/` holds the database and clones. It's in `.gitignore`. Delete it to reset local state.
 
 ## Docs to update when behavior changes

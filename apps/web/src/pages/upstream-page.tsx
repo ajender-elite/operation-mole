@@ -96,13 +96,12 @@ export function UpstreamPage(): JSX.Element {
       <div className="space-y-2 border-b border-line bg-surface px-4 py-3">
         <CompareForm
           key={key}
-          initialLeft={upstream?.type === 'git' ? upstream : undefined}
-          initialRight={downstream?.type === 'git' ? downstream : undefined}
+          initialLeft={upstream}
+          initialRight={downstream}
           repos={session.data?.repos ?? []}
           user={user}
           sessionId={sessionId}
           labels={['Upstream', 'Downstream']}
-          isGitOnly
           submitLabel="Analyze"
           onSubmit={(l, r) => {
             const next = new URLSearchParams(sourcesSearch(l, r));
@@ -120,7 +119,7 @@ export function UpstreamPage(): JSX.Element {
           left behind in any repository.
         </p>
       </div>
-      {upstream?.type === 'git' && downstream?.type === 'git' ? (
+      {upstream && downstream ? (
         <Analysis key={key} pair={{ user, sessionId, upstream, downstream }} />
       ) : (
         <p className="m-auto max-w-md p-8 text-center text-muted">
@@ -541,11 +540,13 @@ function CommitDetail({
 }) {
   const [isPatchOpen, setIsPatchOpen] = useState(false);
   const { user, sessionId } = pinned;
-  // Snapshot compare of the upstream commit's tree against the downstream snapshot.
+  // Folder Compare of the upstream commit's tree against the downstream snapshot, opened in
+  // its own tab; for a file, at the file's folder (where the tree shows which sides have it).
   const compareLink = (file?: string) => {
     const upstreamAt: GitSource = { ...pinned.upstream, branch: commit.sha };
     const search = new URLSearchParams(sourcesSearch(upstreamAt, pinned.downstream));
-    if (file !== undefined) search.set('file', file);
+    const folder = file?.split('/').slice(0, -1).join('/') ?? '';
+    if (folder !== '') search.set('path', folder);
     return `${sessionPath(user, sessionId, 'folders')}?${search}`;
   };
   const alreadyMatching = result?.files.filter((f) => f.outcome === 'already-present').length ?? 0;

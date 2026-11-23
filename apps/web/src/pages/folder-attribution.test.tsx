@@ -14,8 +14,9 @@ import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
 
 /*
- * The git investigation flow in Folders: attribution follows focus from the repository to a
- * folder, a file, a hunk and a line; a commit leads back to the differences it accounts for.
+ * The investigation flow: Folder Compare shows what differs; what accounts for it is computed
+ * only when asked, scoped to what the user is looking at (the comparison, a folder, a file, a
+ * hunk, a line). Files open in their own tab, and tabs keep their state.
  */
 
 const LEFT_SHA = '1'.repeat(40);
@@ -215,6 +216,20 @@ const diffs: Record<string, SnapshotFileDiff> = {
 let tree: CompareNode;
 let diffRequests: SnapshotFileDiffRequest[];
 
+/** What the server returns without git blame: the same hunks, no commits. */
+const plain = (diff: SnapshotFileDiff): SnapshotFileDiff => ({
+  ...diff,
+  commits: [],
+  hunks: diff.hunks.map((h) => ({
+    ...h,
+    lines: h.lines.map((line) => {
+      const copy = { ...line };
+      delete copy.commit;
+      return copy;
+    }),
+  })),
+});
+
 beforeEach(() => {
   tree = root;
   diffRequests = [];
@@ -243,25 +258,39 @@ beforeEach(() => {
           },
         ],
       };
-      return HttpResponse.json(found);
+      return HttpResponse.json(body.attribute === false ? plain(found) : found);
     }),
   );
 });
 
-const FOLDERS = `/u/${USER}/s/s1/folders?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev`;
+const BASE = `/u/${USER}/s/s1`;
+const FOLDERS = `${BASE}/folders?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev`;
+const FILE = (path: string, extra = '') =>
+  `${BASE}/file?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev&leftCommit=${LEFT_SHA}&rightCommit=${RIGHT_SHA}&leftPath=${encodeURIComponent(path)}&rightPath=${encodeURIComponent(path)}${extra}`;
 const panel = () => screen.getByRole('complementary', { name: 'Attribution' });
 const commitList = () => within(panel()).findByRole('list', { name: 'Divergence commits' });
 const subjects = async () =>
   within(await commitList())
     .getAllByRole('button')
     .map((b) => /[A-E]: [a-z -]+/.exec(b.textContent)?.[0]);
+const attributed = () => diffRequests.filter((r) => r.attribute !== false);
 
-describe('git comparisons in Folders', () => {
-  it('shows each side’s resolved commit and attributes the whole repository', async () => {
+describe('explaining differences on demand', () => {
+  it('shows what is different first, without attributing anything', async () => {
     renderApp(FOLDERS);
     const labels = await screen.findByTestId('column-labels');
     expect(labels).toHaveTextContent('app @ main11111111');
     expect(labels).toHaveTextContent('app @ dev22222222');
+    expect(await screen.findByRole('treeitem', { name: 'audio' })).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Attribution' })).not.toBeInTheDocument();
+    expect(diffRequests).toEqual([]);
+  });
+
+  it('explains the whole comparison when asked', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(FOLDERS);
+    await user.click(await screen.findByRole('button', { name: 'Explain differences here' }));
+    expect(app.search().get('explain')).toBe('/');
     expect(within(panel()).getByText('Repository')).toBeInTheDocument();
     await waitFor(async () => {
       expect((await subjects()).sort()).toEqual(
@@ -280,16 +309,28 @@ describe('git comparisons in Folders', () => {
     ]);
   });
 
-  it('narrows attribution to the focused folder', async () => {
+  it('explains only the focused folder, from its row', async () => {
     const user = userEvent.setup();
     renderApp(FOLDERS);
-    await user.click(await screen.findByRole('treeitem', { name: 'docs' }));
+    const docs = await screen.findByRole('treeitem', { name: 'docs' });
+    await user.click(within(docs).getByRole('button', { name: 'Explain difference' }));
     expect(within(panel()).getByText('Folder')).toBeInTheDocument();
     await waitFor(async () => {
       expect((await subjects()).sort()).toEqual(['A: shared history', 'E: base-only docs']);
     });
     expect(within(panel()).getByText('In both histories')).toBeInTheDocument();
     expect(within(panel()).getByText('Base history only')).toBeInTheDocument();
+    // Nothing outside the folder was analyzed.
+    expect(attributed().map((r) => r.leftPath ?? r.rightPath)).toEqual(['docs/readme.md']);
+  });
+
+  it('puts the explanation away again', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(`${FOLDERS}&explain=docs%2F`);
+    const aside = await screen.findByRole('complementary', { name: 'Attribution' });
+    await user.click(within(aside).getByRole('button', { name: 'Close explanation' }));
+    expect(screen.queryByRole('complementary', { name: 'Attribution' })).not.toBeInTheDocument();
+    expect(app.search().has('explain')).toBe(false);
   });
 
   it('shows renames as linked entries', async () => {
@@ -302,13 +343,21 @@ describe('git comparisons in Folders', () => {
     );
   });
 
-  it('opens a file in place, then narrows from file to hunk to line', async () => {
+  it('opens a file in its own tab with just the difference, then narrows the explanation from file to hunk to line', async () => {
     const user = userEvent.setup();
     const app = renderApp(`${FOLDERS}&path=audio`);
     await user.dblClick(await screen.findByRole('treeitem', { name: 'Stream.cpp' }));
-    expect(app.search().get('file')).toBe('audio/Stream.cpp');
-    expect(app.search().get('path')).toBe('audio');
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`${BASE}/file`);
+    });
     const diff = await screen.findByRole('region', { name: 'Snapshot diff' });
+    expect(within(diff).getByText('value = 20')).toBeInTheDocument();
+    expect(diff.querySelectorAll('[data-commit]')).toHaveLength(0);
+    expect(screen.queryByRole('complementary', { name: 'Attribution' })).not.toBeInTheDocument();
+    expect(attributed()).toEqual([]);
+
+    await user.click(screen.getByRole('button', { name: 'Explain difference' }));
+    expect(app.search().get('explain')).toBe('1');
     expect(within(panel()).getByText('File')).toBeInTheDocument();
     await waitFor(async () => {
       expect((await subjects()).sort()).toEqual([
@@ -326,15 +375,11 @@ describe('git comparisons in Folders', () => {
     await user.click(within(diff).getByText('value = 20'));
     expect(within(panel()).getByText('Line')).toBeInTheDocument();
     expect(await subjects()).toEqual(['C: change value']);
-
-    await user.click(screen.getByRole('button', { name: /^folder$/i }));
-    expect(app.search().has('file')).toBe(false);
-    expect(await screen.findByRole('treeitem', { name: 'Stream.cpp' })).toBeInTheDocument();
   });
 
   it('goes from a commit to every difference it accounts for', async () => {
     const user = userEvent.setup();
-    const app = renderApp(FOLDERS);
+    const app = renderApp(`${FOLDERS}&explain=%2F`);
     // Let the repository attribution finish so every file is analyzed.
     await waitFor(async () => {
       expect(await subjects()).toHaveLength(5);
@@ -358,15 +403,20 @@ describe('git comparisons in Folders', () => {
     expect(screen.getByRole('treeitem', { name: 'docs' })).not.toHaveAttribute('data-highlighted');
 
     await user.click(within(where).getByRole('button', { name: /audio\/Stream\.cpp/ }));
-    expect(app.search().get('file')).toBe('audio/Stream.cpp');
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`${BASE}/file`);
+    });
+    expect(app.search().get('leftPath')).toBe('audio/Stream.cpp');
     expect(app.search().get('hunk')).toBe('0');
+    expect(app.search().get('commit')).toBe(B.sha);
     const diff = await screen.findByRole('region', { name: 'Snapshot diff' });
-    const lines = diff.querySelectorAll(`[data-commit="${B.sha}"]`);
-    expect(lines).toHaveLength(2);
+    await waitFor(() => {
+      expect(diff.querySelectorAll(`[data-commit="${B.sha}"]`)).toHaveLength(2);
+    });
   });
 
-  it('restores file, hunk and commit from the URL', async () => {
-    renderApp(`${FOLDERS}&file=audio%2FStream.cpp&hunk=0&commit=${C.sha}`);
+  it('restores a file tab’s explanation, hunk and commit from the URL', async () => {
+    renderApp(FILE('audio/Stream.cpp', `&explain=1&hunk=0&commit=${C.sha}`));
     expect(await screen.findByRole('button', { name: '@@ -1,2 +1,3 @@' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -376,7 +426,7 @@ describe('git comparisons in Folders', () => {
     );
   });
 
-  it('waits for a click before attributing a large folder', async () => {
+  it('asks before attributing a large folder, even when asked to explain it', async () => {
     const user = userEvent.setup();
     tree = {
       ...root,
@@ -389,8 +439,8 @@ describe('git comparisons in Folders', () => {
       })),
     };
     renderApp(FOLDERS);
-    const aside = await screen.findByRole('complementary', { name: 'Attribution' });
-    const start = await within(aside).findByRole('button', { name: 'Attribute 45 files' });
+    await user.click(await screen.findByRole('button', { name: 'Explain differences here' }));
+    const start = await within(panel()).findByRole('button', { name: 'Attribute 45 files' });
     expect(diffRequests).toEqual([]);
     await user.click(start);
     // 45 diffs, 4 at a time: allow for a loaded machine.
@@ -401,5 +451,95 @@ describe('git comparisons in Folders', () => {
       { timeout: 10_000 },
     );
     expect(await subjects()).toEqual(['B: add extra']);
+  }, 20_000); // the waitFor above allows 10s; the 5s default test timeout would cut it short
+});
+
+describe('working in tabs', () => {
+  const tab = (name: RegExp | string) => screen.getByRole('tab', { name });
+  const folderTab = () => tab(/app @ main ↔ app @ dev/);
+
+  it('drills into a file and comes back to the folder exactly as it was left', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(FOLDERS);
+    const audio = await screen.findByRole('treeitem', { name: 'audio' });
+    await user.click(within(audio).getByRole('button', { name: /expand/i }));
+    await user.click(screen.getByRole('radio', { name: /differences only/i }));
+    await user.dblClick(await screen.findByRole('treeitem', { name: 'Stream.cpp' }));
+    await waitFor(() => {
+      expect(tab('Stream.cpp')).toHaveAttribute('aria-selected', 'true');
+    });
+    expect(await screen.findByRole('region', { name: 'Snapshot diff' })).toBeInTheDocument();
+
+    await user.click(folderTab());
+    expect(app.location().pathname).toBe(`${BASE}/folders`);
+    expect(screen.getByRole('treeitem', { name: 'audio' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByRole('treeitem', { name: 'Stream.cpp' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /differences only/i })).toBeChecked();
+    expect(screen.queryByRole('treeitem', { name: 'same.txt' })).not.toBeInTheDocument();
+  });
+
+  it('focuses an open file tab instead of opening the same file twice', async () => {
+    const user = userEvent.setup();
+    renderApp(`${FOLDERS}&path=audio`);
+    await user.dblClick(await screen.findByRole('treeitem', { name: 'Stream.cpp' }));
+    await user.click(await screen.findByRole('button', { name: /folder compare/i }));
+    expect(folderTab()).toHaveAttribute('aria-selected', 'true');
+    await user.dblClick(screen.getByRole('treeitem', { name: 'Stream.cpp' }));
+    await waitFor(() => {
+      expect(tab('Stream.cpp')).toHaveAttribute('aria-selected', 'true');
+    });
+    expect(screen.getAllByRole('tab', { name: 'Stream.cpp' })).toHaveLength(1);
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
+  });
+
+  it('closing a tab returns to the one before it', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(`${FOLDERS}&path=audio`);
+    await user.dblClick(await screen.findByRole('treeitem', { name: 'Stream.cpp' }));
+    await user.click(await screen.findByRole('button', { name: 'Close Stream.cpp' }));
+    await waitFor(() => {
+      expect(app.location().pathname).toBe(`${BASE}/folders`);
+    });
+    expect(screen.queryByRole('tab', { name: 'Stream.cpp' })).not.toBeInTheDocument();
+    expect(app.search().get('path')).toBe('audio');
+  });
+
+  it('reopens a comparison that is already open in its tab, where the user left it', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(`${FOLDERS}&path=docs`);
+    expect(await screen.findByRole('treeitem', { name: 'readme.md' })).toBeInTheDocument();
+    await user.click(tab('Overview'));
+    const compare = await screen.findByRole('region', { name: 'Compare' });
+    for (const [side, branch] of [
+      ['Base', 'main'],
+      ['Target', 'dev'],
+    ] as const) {
+      await user.selectOptions(within(compare).getByLabelText(`${side} repository`), 'r1');
+      await user.selectOptions(within(compare).getByLabelText(`${side} branch`), branch);
+    }
+    await user.click(within(compare).getByRole('button', { name: /compare folders/i }));
+    await waitFor(() => {
+      expect(folderTab()).toHaveAttribute('aria-selected', 'true');
+    });
+    expect(app.search().get('path')).toBe('docs');
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+  });
+
+  it('remembers the open tabs across a reload', async () => {
+    const user = userEvent.setup();
+    const first = renderApp(`${FOLDERS}&path=audio`);
+    await user.dblClick(await screen.findByRole('treeitem', { name: 'Stream.cpp' }));
+    await screen.findByRole('tab', { name: 'Stream.cpp' });
+    first.unmount();
+
+    renderApp(FOLDERS);
+    expect(await screen.findByRole('tab', { name: 'Stream.cpp' })).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: /app @ main ↔ app @ dev/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
   });
 });

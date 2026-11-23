@@ -4,7 +4,7 @@ Code: `apps/server/src/compare/` (`compare-directories.ts`, `files-equal.ts`, `s
 
 ## Matching
 
-Entries are matched by **relative path**: `src/a.ts` on the base side is compared with `src/a.ts` on the target side. Files with different names are never paired as one entry. In the UI, use **Select for compare** to diff two files with different names.
+Entries are matched by **relative path**: `src/a.ts` on the base side is compared with `src/a.ts` on the target side. Files with different names are never paired as one entry, except git renames (below).
 
 ### Renames (git sides only)
 
@@ -57,7 +57,9 @@ The summary counts **files and symlinks** by status, including those inside one-
 
 For two git snapshots, opening a file shows **git's own hunks** for that file between the two commits (`git diff` of the two blobs), read Base → Target, with each changed line attributed. A rename pair is diffed as one file; a one-sided file is one hunk of only `−` or only `+` lines. Binary files (same NUL rule) and text over 5 MB get no hunks. See [investigation model](investigation-model.md).
 
-## File diff (Files page)
+## File diff (`GET /api/compare/files`)
+
+The API still diffs two local files; the web app no longer has a page for it.
 
 - **Binary:** a NUL byte in the first 8 KB, the same rule git uses. Binary files show size and SHA-256 instead of a diff.
 - **Text:** shown up to 5 MB; larger files show a summary.

@@ -58,6 +58,8 @@ export function SnapshotDiffView({
   onSelectCommit,
 }: SnapshotDiffViewProps): JSX.Element {
   const commits = new Map(diff.commits.map((c) => [c.sha, c]));
+  // A plain diff (nothing explained yet) has no commit column.
+  const hasCommits = diff.commits.length > 0;
   const hunkRefs = useRef<Array<HTMLElement | null>>([]);
   const lineRef = useRef<HTMLDivElement | null>(null);
 
@@ -221,7 +223,10 @@ export function SnapshotDiffView({
                   data-commit={line.commit}
                   aria-current={isFocused || undefined}
                   className={clsx(
-                    'grid grid-cols-[3rem_3rem_1.25rem_5.5rem_minmax(0,1fr)] items-start',
+                    'grid items-start',
+                    hasCommits
+                      ? 'grid-cols-[3rem_3rem_1.25rem_5.5rem_minmax(0,1fr)]'
+                      : 'grid-cols-[3rem_3rem_1.25rem_minmax(0,1fr)]',
                     lineClass[line.kind],
                     isChanged && 'cursor-pointer',
                     isDimmed && 'opacity-40',
@@ -248,28 +253,30 @@ export function SnapshotDiffView({
                   >
                     {marker[line.kind]}
                   </span>
-                  <span className="px-1">
-                    {commit && (
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        title={commitTitle(commit)}
-                        aria-label={`Commit ${shortSha(commit.sha)}: ${commit.subject}`}
-                        className={clsx(
-                          'rounded px-1 text-[11px] leading-4 hover:underline',
-                          placement === 'both'
-                            ? 'border border-dashed border-line text-muted'
-                            : 'bg-surface/70 text-ink',
-                        )}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectCommit(commit.sha);
-                        }}
-                      >
-                        {shortSha(commit.sha)}
-                      </button>
-                    )}
-                  </span>
+                  {hasCommits && (
+                    <span className="px-1">
+                      {commit && (
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          title={commitTitle(commit)}
+                          aria-label={`Commit ${shortSha(commit.sha)}: ${commit.subject}`}
+                          className={clsx(
+                            'rounded px-1 text-[11px] leading-4 hover:underline',
+                            placement === 'both'
+                              ? 'border border-dashed border-line text-muted'
+                              : 'bg-surface/70 text-ink',
+                          )}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectCommit(commit.sha);
+                          }}
+                        >
+                          {shortSha(commit.sha)}
+                        </button>
+                      )}
+                    </span>
+                  )}
                   <span className="whitespace-pre-wrap break-all pr-3">{line.text || ' '}</span>
                 </div>
               );

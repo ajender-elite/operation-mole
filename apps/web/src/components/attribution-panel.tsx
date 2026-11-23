@@ -1,6 +1,6 @@
 import type { DivergenceCommit } from '@om/shared';
 import clsx from 'clsx';
-import { ArrowLeft, Copy, GitCommitHorizontal, LoaderCircle, Search } from 'lucide-react';
+import { ArrowLeft, Copy, GitCommitHorizontal, LoaderCircle, Search, X } from 'lucide-react';
 import type { JSX, ReactNode } from 'react';
 import {
   commitPlacement,
@@ -44,6 +44,8 @@ type AttributionPanelProps = {
   onOpenFile: (key: string, hunk: number | undefined) => void;
   /** Extra controls under the selected commit (e.g. "Analyze this folder"). */
   commitActions?: ReactNode;
+  /** Hides the explanation again: the comparison goes back to showing only the difference. */
+  onClose?: () => void;
 };
 
 const placementText = {
@@ -103,20 +105,34 @@ export function AttributionPanel({
   onSelectCommit,
   onOpenFile,
   commitActions,
+  onClose,
 }: AttributionPanelProps): JSX.Element {
   return (
     <aside
       aria-label="Attribution"
       className="flex min-h-0 flex-col border-t border-line bg-surface text-sm lg:w-[23rem] lg:shrink-0 lg:border-l lg:border-t-0"
     >
-      <header className="border-b border-line px-3 py-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted">
-          What accounts for this difference
-        </p>
-        <p className="mt-0.5 truncate" title={scope.label}>
-          <span className="font-semibold">{scope.kind}</span>{' '}
-          <span className="font-mono text-xs">{scope.label}</span>
-        </p>
+      <header className="flex items-start gap-2 border-b border-line px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted">
+            What accounts for this difference
+          </p>
+          <p className="mt-0.5 truncate" title={scope.label}>
+            <span className="font-semibold">{scope.kind}</span>{' '}
+            <span className="font-mono text-xs">{scope.label}</span>
+          </p>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Close explanation"
+            title="Close"
+            className="rounded p-1 text-muted hover:bg-hover hover:text-ink"
+            onClick={onClose}
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        )}
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
         {selected ? (

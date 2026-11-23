@@ -116,6 +116,11 @@ export const SnapshotFileDiffRequestSchema = SessionFieldsSchema.extend({
   rightPath: RepoPathSchema.optional(),
   /** Show the whole file as context instead of 3 lines around each change. */
   fullFile: z.boolean().default(false),
+  /**
+   * Attribute each changed line with `git blame` (the default). `false` returns the same hunks
+   * without commits, for showing the difference before anyone asks what accounts for it.
+   */
+  attribute: z.boolean().default(true),
 }).refine(
   (r) => r.leftPath !== undefined || r.rightPath !== undefined,
   'Provide leftPath, rightPath or both',

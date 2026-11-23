@@ -1,14 +1,16 @@
 import { Navigate, type RouteObject } from 'react-router';
 import { AppShell } from './components/app-shell.tsx';
-import { DirectoryComparePage } from './pages/directory-compare-page.tsx';
-import { FileComparePage } from './pages/file-compare-page.tsx';
+import { SessionWorkspace } from './components/session-workspace.tsx';
+import { FilesRedirect } from './pages/directory-compare-page.tsx';
 import { NotFoundPage } from './pages/not-found-page.tsx';
-import { SessionOverviewPage } from './pages/session-overview-page.tsx';
 import { SessionsPage } from './pages/sessions-page.tsx';
-import { LabRedirect, UpstreamPage } from './pages/upstream-page.tsx';
+import { LabRedirect } from './pages/upstream-page.tsx';
 import { WelcomePage } from './pages/welcome-page.tsx';
 
-/** All app routes. The session lives in the path; each page keeps its own state in the query. */
+/**
+ * All app routes. The session lives in the path; inside it, {@link SessionWorkspace} keeps the
+ * Overview and every opened comparison in its own tab, each with its state in its own URL.
+ */
 export const routes: RouteObject[] = [
   {
     path: '/',
@@ -16,12 +18,11 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <WelcomePage /> },
       { path: 'u/:user', element: <SessionsPage /> },
-      { path: 'u/:user/s/:sessionId', element: <SessionOverviewPage /> },
-      { path: 'u/:user/s/:sessionId/folders', element: <DirectoryComparePage /> },
-      { path: 'u/:user/s/:sessionId/files', element: <FileComparePage /> },
-      { path: 'u/:user/s/:sessionId/upstream', element: <UpstreamPage /> },
+      { path: 'u/:user/s/:sessionId/*', element: <SessionWorkspace /> },
       // The Lab placeholder became Upstream.
       { path: 'u/:user/s/:sessionId/lab', element: <LabRedirect /> },
+      // Before File Compare had its own tab, files opened from `/files` links: go to Folders.
+      { path: 'u/:user/s/:sessionId/files', element: <FilesRedirect /> },
       // Links from before sessions existed.
       { path: 'directories', element: <Navigate to="/" replace /> },
       { path: 'files', element: <Navigate to="/" replace /> },

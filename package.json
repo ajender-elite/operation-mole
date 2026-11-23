@@ -10,6 +10,7 @@
     "dev": "concurrently -n server,web -c blue,green \"pnpm --filter @om/server dev\" \"pnpm --filter @om/web dev\"",
     "build": "pnpm --filter @om/web build",
     "start": "pnpm --filter @om/server start",
+    "release": "node scripts/release.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && pnpm -r typecheck",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",

@@ -25,6 +25,7 @@ Element.prototype.scrollIntoView = function scrollIntoView() {
 beforeEach(() => {
   stubMatchMedia();
   localStorage.clear();
+  sessionStorage.clear();
   document.documentElement.removeAttribute('data-theme');
 });
 

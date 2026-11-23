@@ -1,16 +1,13 @@
-import type { Source } from '@om/shared';
+import type { GitSource } from '@om/shared';
 
-/** A side being edited: like Source, but fields may still be empty. */
-export type SourceDraft =
-  { type: 'path'; path: string } | { type: 'git'; repoId: string; branch: string };
+/** A side being edited: like GitSource, but the repo and branch may still be empty. */
+export type SourceDraft = { type: 'git'; repoId: string; branch: string };
 
-/** A blank folder side: the starting point of a new comparison form. */
-export const emptyDraft: SourceDraft = { type: 'path', path: '' };
+/** A blank side: the starting point of a new comparison form. */
+export const emptyDraft: SourceDraft = { type: 'git', repoId: '', branch: '' };
 
-/** Whether a draft has everything needed to compare (a non-blank path, or a repo and branch). */
-export const isComplete = (d: SourceDraft): boolean =>
-  d.type === 'path' ? d.path.trim() !== '' : d.repoId !== '' && d.branch !== '';
+/** Whether a draft names both a repository and a branch. */
+export const isComplete = (d: SourceDraft): boolean => d.repoId !== '' && d.branch !== '';
 
-/** The API source for a complete draft (paths are trimmed). */
-export const toSource = (d: SourceDraft): Source =>
-  d.type === 'path' ? { type: 'path', path: d.path.trim() } : d;
+/** The API source for a complete draft. */
+export const toSource = (d: SourceDraft): GitSource => d;

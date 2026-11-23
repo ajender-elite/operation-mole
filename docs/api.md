@@ -166,7 +166,7 @@ These need git sources on both sides and a session (`user`, `sessionId` in the b
 
 ### `POST /api/snapshot/file-diff`
 
-Body: `{ left: GitSource, right: GitSource, user, sessionId, leftPath?, rightPath?, fullFile? }`. Give both paths for a modified or renamed file, one for a one-sided file. Paths are POSIX, relative, without `.`/`..`, and read literally (no pathspec magic).
+Body: `{ left: GitSource, right: GitSource, user, sessionId, leftPath?, rightPath?, fullFile?, attribute? }`. Give both paths for a modified or renamed file, one for a one-sided file. `attribute` (default `true`) runs `git blame` on the changed lines; `false` returns the same hunks with no commits, which is cheaper and what the UI shows before the user asks for an explanation. Paths are POSIX, relative, without `.`/`..`, and read literally (no pathspec magic).
 
 ```ts
 interface SnapshotFileDiff {

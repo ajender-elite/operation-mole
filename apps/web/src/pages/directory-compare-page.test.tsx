@@ -1,4 +1,4 @@
-import type { RepoInfo, Source } from '@om/shared';
+import type { GitSource, RepoInfo } from '@om/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -9,8 +9,8 @@ import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
 
 type CompareBody = {
-  left: Source;
-  right: Source;
+  left: GitSource;
+  right: GitSource;
   user?: string;
   sessionId?: string;
 };
@@ -19,8 +19,8 @@ let requests: CompareBody[];
 let repos: RepoInfo[];
 let fetchCalls: string[];
 
-const label = (s: Source) => (s.type === 'path' ? s.path : `app @ ${s.branch}`);
-const root = (s: Source) => (s.type === 'path' ? s.path : `/data/wt/${s.repoId}/${s.branch}`);
+const label = (s: GitSource) => `app @ ${s.branch}`;
+const root = (s: GitSource) => `/data/wt/${s.repoId}/${s.branch}`;
 
 beforeEach(() => {
   requests = [];
@@ -63,11 +63,8 @@ beforeEach(() => {
     http.post('*/api/compare/directories', async ({ request }) => {
       const body = (await request.json()) as CompareBody;
       requests.push(body);
-      if (body.left.type === 'path' && body.left.path === '/missing') {
-        return HttpResponse.json(
-          { message: 'Directory does not exist: /missing' },
-          { status: 400 },
-        );
+      if (body.left.branch === 'missing') {
+        return HttpResponse.json({ message: 'Branch not found: missing' }, { status: 400 });
       }
       return HttpResponse.json({
         ...dirResult,
@@ -75,6 +72,8 @@ beforeEach(() => {
         right: root(body.right),
         leftLabel: label(body.left),
         rightLabel: label(body.right),
+        leftSnapshot: { commit: 'a'.repeat(40), ref: body.left.branch },
+        rightSnapshot: { commit: 'b'.repeat(40), ref: body.right.branch },
       });
     }),
   );
@@ -82,43 +81,48 @@ beforeEach(() => {
 
 const BASE = `/u/${USER}/s/s1`;
 const FOLDERS = `${BASE}/folders`;
+const FILE = `${BASE}/file`;
 const row = (name: string) => screen.findByRole('treeitem', { name });
-const loaded = `${FOLDERS}?left=%2FL&right=%2FR`;
+const loaded = `${FOLDERS}?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev`;
 
 describe('DirectoryComparePage', () => {
-  it('opens the default folders from the server when none are given', async () => {
-    server.use(http.get('*/api/defaults', () => HttpResponse.json({ left: '/L', right: '/R' })));
-    const app = renderApp(FOLDERS);
-    expect(await row('docs')).toBeInTheDocument();
-    expect(app.search().get('left')).toBe('/L');
-    expect(app.search().get('right')).toBe('/R');
-    expect(screen.getByLabelText(/base folder/i)).toHaveValue('/L');
-  });
-
-  it('shows an empty form when there are no defaults', async () => {
-    server.use(http.get('*/api/defaults', () => HttpResponse.json({})));
+  it('asks for a repository and branch on both sides when nothing is chosen', async () => {
     renderApp(FOLDERS);
-    expect(await screen.findByText(/enter two folder paths/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/base folder/i)).toHaveValue('');
+    expect(
+      await screen.findByText(/choose a repository and a branch for both sides/i),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('tree')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Base repository URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Target repository URL')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^compare$/i })).toBeDisabled();
   });
 
-  it('puts the paths in the URL and shows the colored comparison', async () => {
+  it('does not preselect a branch: the user must choose one', async () => {
     const user = userEvent.setup();
-    server.use(http.get('*/api/defaults', () => HttpResponse.json({})));
+    renderApp(FOLDERS);
+    await user.selectOptions(await screen.findByLabelText('Base repository'), 'r1');
+    expect(screen.getByLabelText('Base branch')).toHaveValue('');
+    expect(screen.getByRole('button', { name: /^compare$/i })).toBeDisabled();
+  });
+
+  it('puts the repos and branches in the URL and shows the colored comparison', async () => {
+    const user = userEvent.setup();
     const app = renderApp(FOLDERS);
-    await screen.findByText(/enter two folder paths/i);
-    await user.type(screen.getByLabelText(/base folder/i), '/L');
-    await user.type(screen.getByLabelText(/target folder/i), '/R');
+    const sides = { Base: 'main', Target: 'dev' } as const;
+    for (const [side, branch] of Object.entries(sides)) {
+      await user.selectOptions(await screen.findByLabelText(`${side} repository`), 'r1');
+      await user.selectOptions(screen.getByLabelText(`${side} branch`), branch);
+    }
     await user.click(screen.getByRole('button', { name: /^compare$/i }));
 
     expect(await row('docs')).toHaveAttribute('data-status', 'modified');
-    expect(app.search().get('left')).toBe('/L');
-    expect(app.search().get('right')).toBe('/R');
+    expect(app.search().get('leftRepo')).toBe('r1');
+    expect(app.search().get('leftBranch')).toBe('main');
+    expect(app.search().get('rightBranch')).toBe('dev');
     expect(requests).toEqual([
       {
-        left: { type: 'path', path: '/L' },
-        right: { type: 'path', path: '/R' },
+        left: { type: 'git', repoId: 'r1', branch: 'main' },
+        right: { type: 'git', repoId: 'r1', branch: 'dev' },
         user: USER,
         sessionId: 's1',
       },
@@ -132,6 +136,17 @@ describe('DirectoryComparePage', () => {
     expect(within(summary).getByRole('button', { name: /only in base.*2/i })).toBeInTheDocument();
     expect(within(summary).getByRole('button', { name: /only in target.*2/i })).toBeInTheDocument();
     expect(within(summary).getByRole('button', { name: /different.*1/i })).toBeInTheDocument();
+  });
+
+  it('keeps the sources out of the way once compared, editable on request', async () => {
+    const user = userEvent.setup();
+    renderApp(loaded);
+    expect(await row('docs')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Base repository')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Change' }));
+    expect(screen.getByLabelText('Base repository')).toHaveValue('r1');
+    expect(screen.getByLabelText('Base branch')).toHaveValue('main');
+    expect(screen.getByLabelText('Target branch')).toHaveValue('dev');
   });
 
   it('shows the entry only on its own side for one-sided entries', async () => {
@@ -163,10 +178,10 @@ describe('DirectoryComparePage', () => {
     if (!outputFile) throw new Error('expected two output rows');
     await user.dblClick(outputFile);
     await waitFor(() => {
-      expect(app.location().pathname).toBe(`${BASE}/files`);
+      expect(app.location().pathname).toBe(FILE);
     });
-    expect(app.search().get('left')).toBe('/L/output');
-    expect(app.search().has('right')).toBe(false);
+    expect(app.search().get('leftPath')).toBe('output');
+    expect(app.search().has('rightPath')).toBe(false);
   });
 
   it('restores the current folder from the URL (e.g. after reload)', async () => {
@@ -183,7 +198,7 @@ describe('DirectoryComparePage', () => {
     await user.dblClick(await row('docs'));
     expect(await row('readme.md')).toBeInTheDocument();
     expect(app.search().get('path')).toBe('docs');
-    expect(app.search().get('left')).toBe('/L');
+    expect(app.search().get('leftRepo')).toBe('r1');
   });
 
   it('navigates into a folder with Enter', async () => {
@@ -237,98 +252,55 @@ describe('DirectoryComparePage', () => {
   });
 
   it('shows API errors', async () => {
-    renderApp(`${FOLDERS}?left=%2Fmissing&right=%2FR`);
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Directory does not exist: /missing',
-    );
+    renderApp(`${FOLDERS}?leftRepo=r1&leftBranch=missing&rightRepo=r1&rightBranch=dev`);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Branch not found: missing');
   });
 
-  it('opens the file diff for a modified file on double-click', async () => {
+  it('opens a file in its own File Compare tab, pinned to the compared commits', async () => {
     const user = userEvent.setup();
     const app = renderApp(`${loaded}&path=docs`);
     await user.dblClick(await row('readme.md'));
     await waitFor(() => {
-      expect(app.location().pathname).toBe(`${BASE}/files`);
+      expect(app.location().pathname).toBe(FILE);
     });
-    expect(app.search().get('left')).toBe('/L/docs/readme.md');
-    expect(app.search().get('right')).toBe('/R/docs/readme.md');
-    expect(app.search().get('from')).toBe(`${loaded}&path=docs`);
+    expect(app.search().get('leftPath')).toBe('docs/readme.md');
+    expect(app.search().get('rightPath')).toBe('docs/readme.md');
+    expect(app.search().get('leftCommit')).toBe('a'.repeat(40));
+    expect(app.search().get('rightCommit')).toBe('b'.repeat(40));
+    expect(app.search().get('leftBranch')).toBe('main');
   });
 
-  it('opens a one-sided view for a file that exists on one side only', async () => {
-    const user = userEvent.setup();
-    const app = renderApp(loaded);
-    await user.dblClick(await row('new.txt'));
+  it('sends old /files links to Folders', async () => {
+    const app = renderApp(`${BASE}/files?leftRepo=r1&leftBranch=main`);
     await waitFor(() => {
-      expect(app.location().pathname).toBe(`${BASE}/files`);
+      expect(app.location().pathname).toBe(FOLDERS);
     });
-    expect(app.search().has('left')).toBe(false);
-    expect(app.search().get('right')).toBe('/R/new.txt');
-  });
-
-  it('compares any two files by selecting one and comparing with another', async () => {
-    const user = userEvent.setup();
-    const app = renderApp(loaded);
-    await user.click(
-      within(await row('same.txt')).getByRole('button', { name: /select for compare/i }),
-    );
-    expect(screen.getByText(/selected: same\.txt/i)).toBeInTheDocument();
-    await user.click(
-      within(await row('new.txt')).getByRole('button', { name: /compare with selected/i }),
-    );
-    await waitFor(() => {
-      expect(app.location().pathname).toBe(`${BASE}/files`);
-    });
-    expect(app.search().get('left')).toBe('/L/same.txt');
-    expect(app.search().get('right')).toBe('/R/new.txt');
+    expect(app.search().get('leftBranch')).toBe('main');
   });
 
   it('compares two branches of a repo already in the session', async () => {
     const user = userEvent.setup();
-    server.use(http.get('*/api/defaults', () => HttpResponse.json({})));
     const app = renderApp(FOLDERS);
-    await screen.findByText(/enter two folder paths/i);
+    await screen.findByText(/choose a repository and a branch/i);
 
     for (const side of ['Base', 'Target'] as const) {
-      const group = screen.getByRole('radiogroup', { name: `${side} source` });
-      await user.click(within(group).getByRole('radio', { name: 'Git repo' }));
       await user.selectOptions(await screen.findByLabelText(`${side} repository`), 'r1');
     }
-    expect(screen.getByLabelText('Base branch')).toHaveValue('main');
+    await user.selectOptions(screen.getByLabelText('Base branch'), 'main');
     await user.selectOptions(screen.getByLabelText('Target branch'), 'dev');
     await user.click(screen.getByRole('button', { name: /^compare$/i }));
 
     expect(await row('docs')).toBeInTheDocument();
     expect(app.search().get('leftRepo')).toBe('r1');
-    expect(app.search().get('leftBranch')).toBe('main');
     expect(app.search().get('rightBranch')).toBe('dev');
-    expect(requests.at(-1)).toEqual({
-      left: { type: 'git', repoId: 'r1', branch: 'main' },
-      right: { type: 'git', repoId: 'r1', branch: 'dev' },
-      user: USER,
-      sessionId: 's1',
-    });
     const columns = screen.getByTestId('column-labels');
     expect(within(columns).getByText('app @ main')).toBeInTheDocument();
     expect(within(columns).getByText('app @ dev')).toBeInTheDocument();
   });
 
-  it('restores git sources from the URL', async () => {
-    renderApp(`${FOLDERS}?leftRepo=r1&leftBranch=main&right=%2FR`);
-    expect(await row('docs')).toBeInTheDocument();
-    const base = screen.getByRole('radiogroup', { name: 'Base source' });
-    expect(within(base).getByRole('radio', { name: 'Git repo' })).toBeChecked();
-    expect(await screen.findByLabelText('Base repository')).toHaveValue('r1');
-    expect(screen.getByLabelText('Base branch')).toHaveValue('main');
-    expect(screen.getByLabelText(/target folder/i)).toHaveValue('/R');
-  });
-
-  it('clones a new repo by URL and selects its default branch', async () => {
+  it('clones a new repo by URL from the repository list, then needs an explicit branch', async () => {
     const user = userEvent.setup();
-    renderApp(loaded);
-    await row('docs');
-    const group = screen.getByRole('radiogroup', { name: 'Target source' });
-    await user.click(within(group).getByRole('radio', { name: 'Git repo' }));
+    renderApp(FOLDERS);
     await user.selectOptions(await screen.findByLabelText('Target repository'), 'add');
     await user.type(
       screen.getByLabelText('Target repository URL'),
@@ -337,34 +309,29 @@ describe('DirectoryComparePage', () => {
     await user.click(screen.getByRole('button', { name: 'Clone target repository' }));
 
     expect(await screen.findByLabelText('Target repository')).toHaveValue('r2');
-    expect(screen.getByLabelText('Target branch')).toHaveValue('main');
-    expect(
-      within(screen.getByLabelText('Target branch')).getByRole('option', { name: 'next' }),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Target branch')).toHaveValue('');
+    await user.selectOptions(screen.getByLabelText('Target branch'), 'next');
+    expect(screen.getByLabelText('Target branch')).toHaveValue('next');
   });
 
   it('explains when a repo cannot be cloned', async () => {
     const user = userEvent.setup();
     repos = [];
-    renderApp(loaded);
-    await row('docs');
-    const group = screen.getByRole('radiogroup', { name: 'Base source' });
-    await user.click(within(group).getByRole('radio', { name: 'Git repo' }));
+    renderApp(FOLDERS);
+    const base = screen.getByRole('group', { name: 'Base' });
     await user.type(
-      await screen.findByLabelText('Base repository URL'),
+      within(base).getByLabelText('Base repository URL'),
       'https://github.com/acme/broken.git',
     );
-    await user.click(screen.getByRole('button', { name: 'Clone base repository' }));
+    await user.click(within(base).getByRole('button', { name: 'Clone base repository' }));
     expect(await screen.findByText(/could not clone/i)).toBeInTheDocument();
   });
 
   it('fetches the latest branches for a repo on request', async () => {
     const user = userEvent.setup();
-    renderApp(`${FOLDERS}?leftRepo=r1&leftBranch=main&right=%2FR`);
-    await row('docs');
-    await user.click(
-      await screen.findByRole('button', { name: 'Fetch latest for base repository' }),
-    );
+    renderApp(FOLDERS);
+    await user.selectOptions(await screen.findByLabelText('Base repository'), 'r1');
+    await user.click(screen.getByRole('button', { name: 'Fetch latest for base repository' }));
     await waitFor(() => {
       expect(fetchCalls).toEqual(['r1']);
     });

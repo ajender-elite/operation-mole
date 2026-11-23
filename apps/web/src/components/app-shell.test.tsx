@@ -22,29 +22,17 @@ describe('AppShell', () => {
     expect(within(brand).getByRole('img', { name: /operation mole/i })).toBeInTheDocument();
   });
 
-  it('shows the user, session and session pages inside a session', async () => {
+  it('shows the user and session inside a session, the session linking to its overview', async () => {
     renderApp(`/u/${USER}/s/s1/upstream`);
     const context = screen.getByRole('navigation', { name: 'Context' });
     expect(within(context).getByRole('link', { name: USER })).toHaveAttribute('href', `/u/${USER}`);
-    expect(await within(context).findByText('Release review')).toBeInTheDocument();
-
-    const nav = screen.getByRole('navigation', { name: 'Main' });
-    expect(within(nav).getByRole('link', { name: 'Overview' })).toHaveAttribute(
+    expect(await within(context).findByRole('link', { name: 'Release review' })).toHaveAttribute(
       'href',
       `/u/${USER}/s/s1`,
     );
-    expect(within(nav).getByRole('link', { name: 'Folders' })).toHaveAttribute(
-      'href',
-      `/u/${USER}/s/s1/folders`,
-    );
-    expect(within(nav).getByRole('link', { name: 'Files' })).toHaveAttribute(
-      'href',
-      `/u/${USER}/s/s1/files`,
-    );
-    expect(within(nav).getByRole('link', { name: 'Upstream' })).toHaveAttribute(
-      'aria-current',
-      'page',
-    );
+    // Working contexts are tabs inside the session, not a fixed menu of pages.
+    expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /upstream/i })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('sends old Lab links to Upstream, keeping the query', async () => {
@@ -55,9 +43,9 @@ describe('AppShell', () => {
     expect(app.search().get('limit')).toBe('50');
   });
 
-  it('has no session navigation outside a session', () => {
+  it('has no session tabs outside a session', () => {
     renderApp(`/u/${USER}`);
-    expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   });
 
   it('toggles between light and dark mode and remembers the choice', async () => {

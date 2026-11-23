@@ -65,7 +65,7 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 
 ### 12. Monaco bundled locally
 
-**Decision:** Monaco and its worker are bundled by Vite and lazy-loaded on the Files page, with no CDN.
+**Decision:** Monaco and its worker are bundled by Vite and lazy-loaded, with no CDN. (Since decision 22 no page renders it; see there.)
 **Why:** works offline and avoids third-party requests. It's a large chunk, but only loaded when needed.
 
 ### 13. Names: OM, Base and Target
@@ -114,3 +114,21 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 ### 21. Lab became Upstream
 
 **Decision:** the Lab placeholder route now hosts commit applicability; `/lab` links redirect.
+
+### 22. The UI compares git repositories only, in one page
+
+**Decision:** each side of a comparison is a repository URL (or a repo already cloned in the session) plus a branch the user picks explicitly; local folders are no longer offered. The old Files page is gone and `/files` links redirect to Folders (files now open in a File Compare tab, see decision 23).
+**Why:** Base and Target may live on different remotes, so the repository must be explicit, and a silently preselected default branch hid what was being compared. One page keeps navigation in one place (tree → file → back) instead of jumping between experiences.
+**Trade-off:** no comparison of two local folders, and no diff of two files with different names (_Select for compare_ is gone), in the UI. The server still accepts path sources and `GET /api/compare/files`. The Monaco `DiffView` is no longer rendered by any page.
+
+### 23. Working contexts as tabs; explanation on request
+
+**Decision:** inside a session, the Overview, each Folder Compare, File Compare and Upstream analysis is a tab. Tabs stay mounted once visited (hidden with `visibility: hidden` and `inert`), each rendered from its own URL with `<Routes location>`; an equivalent context focuses its open tab instead of opening a duplicate. Folder Compare and File Compare show only the difference: attribution is computed when the user asks ("Explain difference"), for what they asked about, and `POST /api/snapshot/file-diff` can skip `git blame` (`attribute: false`).
+**Why:** drilling from a comparison into a file and back should not lose the tree, filters or scroll position, and should not compete with the comparison for space. "What is different" is the first question; "what accounts for it" is secondary, costs a blame per file, and was visually noisy when shown by default.
+**Trade-off:** hidden tabs keep their DOM and queries in memory. Only the active tab's URL is in the address bar; other tabs are restored from `sessionStorage`, so they don't travel with a copied link. The panel no longer follows focus by itself: the user asks again for a different folder or file.
+
+### 24. Releases are built artifacts, not committed builds
+
+**Decision:** `pnpm release` writes `releases/om-<version>/` and a `.tar.gz` (ignored by git): the server and shared TypeScript source in the repository layout, the built web app, and the production dependencies as one flat `node_modules` from the lockfile. It runs with `node apps/server/src/index.ts --production`, with nothing to install or build.
+**Why:** the server needs no build, and its dependencies are plain JavaScript, so one archive runs on Linux, macOS and Windows. Committing `dist` instead would add megabytes to history per release, go stale against the source, and conflict between branches.
+**Trade-off:** the target still needs Node 26+ (type stripping, `node:sqlite`) and git. A dependency with a native addon would make releases OS-specific; the script refuses that rather than ship it silently.

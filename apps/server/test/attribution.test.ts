@@ -63,7 +63,7 @@ beforeAll(async () => {
   await app.ready();
   om = await new OmClient(app, 'attr').start();
   repo = await om.addRepo(scenario.url);
-});
+}, 120_000); // builds a full history with many git processes; the 30s default is too tight under load
 afterAll(async () => {
   await app.close();
   await rm(base, { recursive: true, force: true });
@@ -133,6 +133,16 @@ describe('file attribution', () => {
   it('one file, several divergence commits', async () => {
     const diff = await calc();
     expect(diff.commits.map((c) => c.sha).sort()).toEqual([sha['A'], sha['B'], sha['C']].sort());
+  });
+
+  it('skips git blame when attribution is not asked for, with the same hunks', async () => {
+    const paths = { left: src('blue'), right: src('green'), rightPath: 'lib/other.txt' };
+    const plain = await om.fileDiff({ ...paths, attribute: false });
+    expect(plain.commits).toEqual([]);
+    expect(plain.hunks.flatMap((h) => h.lines).every((l) => l.commit === undefined)).toBe(true);
+    const attributed = await om.fileDiff(paths);
+    expect(attributed.commits.map((c) => c.sha)).toEqual([sha['D']]);
+    expect(plain.hunks.map((h) => h.header)).toEqual(attributed.hunks.map((h) => h.header));
   });
 
   it('one file, one divergence commit', async () => {

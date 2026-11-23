@@ -196,7 +196,8 @@ describe('UpstreamPage', () => {
     expect(href.pathname).toBe(`/u/${USER}/s/s1/folders`);
     expect(href.searchParams.get('leftBranch')).toBe(sha(2));
     expect(href.searchParams.get('rightBranch')).toBe(DOWN_TIP);
-    expect(href.searchParams.get('file')).toBe('shared.txt');
+    // At the file's folder (here the root), where the tree shows which sides have it.
+    expect(href.searchParams.has('path')).toBe(false);
 
     await user.click(within(detail).getByRole('button', { name: 'Show patch' }));
     expect(await within(detail).findByText(/patch against first parent/i)).toBeInTheDocument();

@@ -101,15 +101,28 @@ export class SnapshotAnalyzer {
    * One file between two snapshots, read Base → Target: git's hunks, plus for every changed
    * line the commit `git blame` attributes it to in that line's own history (removed lines in
    * Base's, added lines in Target's), and whether each such commit is reachable from either side.
+   * With `isAttributed: false`, git blame is skipped: the same hunks, with no commits.
    */
   async fileDiff(
     left: ResolvedSnapshot,
     right: ResolvedSnapshot,
-    paths: { leftPath?: string | undefined; rightPath?: string | undefined; isFullFile?: boolean },
+    paths: {
+      leftPath?: string | undefined;
+      rightPath?: string | undefined;
+      isFullFile?: boolean;
+      isAttributed?: boolean;
+    },
     signal?: AbortSignal,
   ): Promise<SnapshotFileDiff> {
-    const { leftPath, rightPath, isFullFile = false } = paths;
-    const key = [left.commit, right.commit, leftPath ?? '', rightPath ?? '', isFullFile].join('\0');
+    const { leftPath, rightPath, isFullFile = false, isAttributed = true } = paths;
+    const key = [
+      left.commit,
+      right.commit,
+      leftPath ?? '',
+      rightPath ?? '',
+      isFullFile,
+      isAttributed,
+    ].join('\0');
     const cached = this.#diffs.get(key);
     if (cached) return cached;
 
@@ -134,7 +147,7 @@ export class SnapshotAnalyzer {
       const parsed = await this.#hunks(left, right, l, r, isFullFile, opt);
       result.hunks = parsed.hunks;
       if (parsed.isTruncated) result.truncated = true;
-      await this.#attribute(result, left, right, leftPath, rightPath, opt);
+      if (isAttributed) await this.#attribute(result, left, right, leftPath, rightPath, opt);
     }
     this.#diffs.set(key, result);
     return result;

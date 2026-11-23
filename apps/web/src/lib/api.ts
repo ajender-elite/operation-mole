@@ -6,7 +6,6 @@ import type {
   DefaultsResponse,
   DirectoryCompareRequest,
   DirectoryCompareResult,
-  FileCompareResult,
   RepoInfo,
   SessionDetail,
   SessionSummary,
@@ -20,7 +19,6 @@ import {
   CommitPatchSchema,
   DefaultsResponseSchema,
   DirectoryCompareResultSchema,
-  FileCompareResultSchema,
   RepoInfoSchema,
   SessionDetailSchema,
   SessionSummaryListSchema,
@@ -160,20 +158,6 @@ export function fetchRepo(user: string, sessionId: string, repoId: string): Prom
     (b) => RepoInfoSchema.parse(b),
     json('POST'),
   );
-}
-
-/**
- * Contents and equality of two files for the diff view (`GET /api/compare/files`); empty sides are left out.
- * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
- */
-export function compareFiles(
-  left: string | undefined,
-  right: string | undefined,
-): Promise<FileCompareResult> {
-  const params = new URLSearchParams();
-  if (left !== undefined && left !== '') params.set('left', left);
-  if (right !== undefined && right !== '') params.set('right', right);
-  return request(`/api/compare/files?${params}`, (b) => FileCompareResultSchema.parse(b));
 }
 
 /**

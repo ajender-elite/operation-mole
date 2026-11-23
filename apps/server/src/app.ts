@@ -226,7 +226,12 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     return await snapshots.fileDiff(
       l,
       r,
-      { leftPath: body.leftPath, rightPath: body.rightPath, isFullFile: body.fullFile },
+      {
+        leftPath: body.leftPath,
+        rightPath: body.rightPath,
+        isFullFile: body.fullFile,
+        isAttributed: body.attribute,
+      },
       abortOnDisconnect(reply),
     );
   });

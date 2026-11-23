@@ -2,14 +2,12 @@ import type { CompareNode, EntryInfo } from '@om/shared';
 import clsx from 'clsx';
 import {
   ChevronRight,
-  Crosshair,
   File,
   FileDiff,
   Folder,
   FolderOpen,
-  GitCompareArrows,
+  GitCommitHorizontal,
   Link2,
-  X,
 } from 'lucide-react';
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
 import { formatBytes } from '../lib/format.ts';
@@ -19,14 +17,12 @@ type Side = 'left' | 'right';
 
 type CompareTreeProps = {
   rows: TreeRow[];
-  /** File currently selected for an ad-hoc comparison. */
-  selected: CompareNode | undefined;
   onToggle: (node: CompareNode) => void;
   onOpen: (node: CompareNode) => void;
-  onSelect: (node: CompareNode | undefined) => void;
-  onCompareWithSelected: (node: CompareNode) => void;
-  /** Called when a row gets keyboard or mouse focus (attribution follows it). */
+  /** Called when a row gets keyboard or mouse focus. */
   onFocusRow?: (node: CompareNode) => void;
+  /** Asks what accounts for a differing entry; offered on its row when given. */
+  onExplain?: (node: CompareNode) => void;
   /** Paths to emphasize, e.g. where a selected commit accounts for differences. */
   highlighted?: ReadonlySet<string>;
 };
@@ -187,12 +183,10 @@ function focusRow(row: Element | null): void {
 /** Side-by-side comparison rows: left tree and right tree aligned on the same row list. */
 export function CompareTree({
   rows,
-  selected,
   onToggle,
   onOpen,
-  onSelect,
-  onCompareWithSelected,
   onFocusRow,
+  onExplain,
   highlighted,
 }: CompareTreeProps): JSX.Element {
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>, row: TreeRow) => {
@@ -228,7 +222,6 @@ export function CompareTree({
       {rows.map((row) => {
         const { node } = row;
         const primarySide: Side = node.left ? 'left' : 'right';
-        const isSelected = selected === node;
         return (
           <div
             key={rowKey(node)}
@@ -236,13 +229,11 @@ export function CompareTree({
             aria-label={node.name}
             aria-level={row.depth + 1}
             aria-expanded={row.isDirectory ? row.expanded : undefined}
-            aria-selected={isSelected}
             data-status={node.status}
             data-highlighted={highlighted?.has(node.path) === true ? 'true' : undefined}
             tabIndex={0}
             className={clsx(
               'group relative grid cursor-default select-none grid-cols-2 border-b border-line/60 outline-none hover:brightness-95 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent dark:hover:brightness-125',
-              isSelected && 'ring-2 ring-inset ring-accent',
               highlighted?.has(node.path) === true && 'shadow-[inset_4px_0_0_var(--color-accent)]',
             )}
             onFocus={(e) => {
@@ -272,6 +263,16 @@ export function CompareTree({
               }}
             />
             <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded bg-surface/95 px-1 shadow-sm group-focus-within:flex group-hover:flex">
+              {onExplain && node.status !== 'identical' && node.status !== 'error' && (
+                <ActionButton
+                  label="Explain difference"
+                  onClick={() => {
+                    onExplain(node);
+                  }}
+                >
+                  <GitCommitHorizontal className="size-4" aria-hidden />
+                </ActionButton>
+              )}
               {row.isDirectory ? (
                 <ActionButton
                   label="Open folder"
@@ -282,44 +283,14 @@ export function CompareTree({
                   <FolderOpen className="size-4" aria-hidden />
                 </ActionButton>
               ) : (
-                <>
-                  <ActionButton
-                    label="Open diff"
-                    onClick={() => {
-                      onOpen(node);
-                    }}
-                  >
-                    <FileDiff className="size-4" aria-hidden />
-                  </ActionButton>
-                  {isSelected ? (
-                    <ActionButton
-                      label="Clear selection"
-                      onClick={() => {
-                        onSelect(undefined);
-                      }}
-                    >
-                      <X className="size-4" aria-hidden />
-                    </ActionButton>
-                  ) : selected !== undefined ? (
-                    <ActionButton
-                      label="Compare with selected"
-                      onClick={() => {
-                        onCompareWithSelected(node);
-                      }}
-                    >
-                      <GitCompareArrows className="size-4" aria-hidden />
-                    </ActionButton>
-                  ) : (
-                    <ActionButton
-                      label="Select for compare"
-                      onClick={() => {
-                        onSelect(node);
-                      }}
-                    >
-                      <Crosshair className="size-4" aria-hidden />
-                    </ActionButton>
-                  )}
-                </>
+                <ActionButton
+                  label="Open diff"
+                  onClick={() => {
+                    onOpen(node);
+                  }}
+                >
+                  <FileDiff className="size-4" aria-hidden />
+                </ActionButton>
               )}
             </div>
           </div>

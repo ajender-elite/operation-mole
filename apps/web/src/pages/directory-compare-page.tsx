@@ -1,22 +1,13 @@
-import type {
-  CompareNode,
-  CompareSummary,
-  DirectoryCompareResult,
-  GitSource,
-  SnapshotFileDiff,
-  Source,
-} from '@om/shared';
-import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import type { CompareNode, CompareSummary, DirectoryCompareResult, GitSource } from '@om/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
-  ArrowLeft,
-  ChevronLeft,
   ChevronRight,
-  FileCode2,
+  GitCommitHorizontal,
   Home,
   LoaderCircle,
+  Pencil,
   RefreshCw,
-  Rows3,
   Search,
 } from 'lucide-react';
 import { useMemo, useState, type JSX } from 'react';
@@ -26,10 +17,8 @@ import {
   type AttributionProgress,
   type AttributionScope,
 } from '../components/attribution-panel.tsx';
-import { CompareTree } from '../components/compare-tree.tsx';
-import { SnapshotDiffView, type LineRef } from '../components/snapshot-diff-view.tsx';
 import { CompareForm } from '../components/compare-form.tsx';
-import { compareDirectories, getDefaults } from '../lib/api.ts';
+import { CompareTree } from '../components/compare-tree.tsx';
 import {
   commitFootprint,
   diffTarget,
@@ -41,15 +30,17 @@ import {
   type DiffTarget,
   type ScopeAttribution,
 } from '../lib/attribution.ts';
-import { sessionKey, useSessionDetail, useSessionParams } from '../lib/session.ts';
+import { folderCompareQuery } from '../lib/folder-compare.ts';
+import { useSessionDetail, useSessionParams } from '../lib/session.ts';
 import {
   fileDiffQuery,
   useAnalyzedDiffs,
   useDirectoryAttribution,
   type SnapshotPair,
 } from '../lib/snapshot-diff.ts';
-import { sourceFromParams, sourcesSearch } from '../lib/sources.ts';
-import { sessionPath } from '../lib/urls.ts';
+import { sourceFromParams, sourceLabel } from '../lib/sources.ts';
+import { fileUrl, foldersUrl, sessionPath } from '../lib/urls.ts';
+import { useWorkspace } from '../lib/workspace-context.ts';
 import {
   breadcrumbs,
   collectDirectoryPaths,
@@ -58,7 +49,6 @@ import {
   flattenTree,
   isDirectory,
   joinPath,
-  rowKey,
   type TreeFilter,
 } from '../lib/tree.ts';
 
@@ -81,69 +71,93 @@ function withParams(params: URLSearchParams, changes: Record<string, string | un
   return `?${next}`;
 }
 
-/** Folders: pick Base and Target and browse the comparison tree. All state lives in the URL. */
+/** Old `/files` links: open Folder Compare with the same query. */
+export function FilesRedirect(): JSX.Element {
+  const { user, sessionId } = useSessionParams();
+  const location = useLocation();
+  return <Navigate replace to={`${sessionPath(user, sessionId, 'folders')}${location.search}`} />;
+}
+
+/**
+ * Folder Compare: what is different between two git snapshots, as a tree. Files open in their
+ * own File Compare tab; what accounts for a difference is shown only when asked. All state
+ * lives in the URL.
+ */
 export function DirectoryComparePage(): JSX.Element {
   const [params] = useSearchParams();
-  const navigate = useNavigate();
   const { user, sessionId } = useSessionParams();
   const session = useSessionDetail(user, sessionId);
+  const workspace = useWorkspace();
+  const [isEditing, setIsEditing] = useState(false);
   const left = sourceFromParams(params, 'left');
   const right = sourceFromParams(params, 'right');
   const key = JSON.stringify([left, right]);
+  const repos = session.data?.repos ?? [];
+
+  const form = (
+    <CompareForm
+      key={key}
+      initialLeft={left}
+      initialRight={right}
+      repos={repos}
+      user={user}
+      sessionId={sessionId}
+      onSubmit={(l, r) => {
+        setIsEditing(false);
+        // A different pair is a different context: it takes this tab's place.
+        workspace.open(foldersUrl(user, sessionId, l, r), { isReplacing: true });
+      }}
+    />
+  );
+
+  if (!left || !right) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="border-b border-line bg-surface px-4 py-3">{form}</div>
+        <p className="m-auto p-8 text-center text-muted">
+          Choose a repository and a branch for both sides to compare their folders.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-line bg-surface px-4 py-3">
-        <CompareForm
-          key={key}
-          initialLeft={left}
-          initialRight={right}
-          repos={session.data?.repos ?? []}
-          user={user}
-          sessionId={sessionId}
-          onSubmit={(l, r) => {
-            void navigate({ search: sourcesSearch(l, r) });
-          }}
-        />
-      </div>
-      {left && right ? (
-        <Comparison key={key} left={left} right={right} user={user} sessionId={sessionId} />
-      ) : !left && !right ? (
-        <DefaultFolders />
+      {isEditing ? (
+        <div className="border-b border-line bg-surface px-4 py-3">{form}</div>
       ) : (
-        <EmptyHint />
+        <div className="flex items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm">
+          <span className="min-w-0 truncate">
+            <span className="text-muted">Base</span>{' '}
+            <span className="font-mono text-left">{sourceLabel(left, repos)}</span>
+            <span className="px-2 text-muted">↔</span>
+            <span className="text-muted">Target</span>{' '}
+            <span className="font-mono text-right">{sourceLabel(right, repos)}</span>
+          </span>
+          <button
+            type="button"
+            className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink"
+            onClick={() => {
+              setIsEditing(true);
+            }}
+          >
+            <Pencil className="size-3.5" aria-hidden /> Change
+          </button>
+        </div>
       )}
+      <Comparison key={key} left={left} right={right} user={user} sessionId={sessionId} />
     </div>
   );
 }
 
-function EmptyHint() {
-  return (
-    <p className="m-auto p-8 text-center text-muted">
-      Enter two folder paths to compare their contents byte by byte.
-    </p>
-  );
-}
-
-/** With no folders in the URL, open the server's default folders (the repo examples). */
-function DefaultFolders() {
-  const query = useQuery({ queryKey: ['defaults'], queryFn: getDefaults, staleTime: Infinity });
-  if (query.isPending) return null;
-  const { left, right } = query.data ?? {};
-  if (left !== undefined && left !== '' && right !== undefined && right !== '') {
-    return <Navigate replace to={{ search: `?${new URLSearchParams({ left, right })}` }} />;
-  }
-  return <EmptyHint />;
-}
-
 type ComparisonProps = {
-  left: Source;
-  right: Source;
+  left: GitSource;
+  right: GitSource;
   user: string;
   sessionId: string;
 };
 
-/** Folders with at most this many differing files are attributed as soon as they're focused. */
+/** An explained folder with at most this many differing files is attributed right away. */
 const AUTO_ATTRIBUTE_FILES = 40;
 
 const NO_GIT: GitSource = { type: 'git', repoId: '', branch: '' };
@@ -156,23 +170,32 @@ const contentNotice = {
   'too-large': 'Too large to diff as text, so no line attribution.',
 } as const;
 
-const nonEmpty = (value: string | null): string | undefined =>
-  value === null || value === '' ? undefined : value;
+/**
+ * What `explain=` names: `/` is the whole comparison, `dir/` a folder, `dir/file` a file. The
+ * trailing slash matters, because a file and a folder can have the same name.
+ */
+function explainValue(node: CompareNode): string {
+  return isDirectory(node) ? `${node.path}/` : node.path;
+}
+
+function explained(root: CompareNode, value: string | undefined): CompareNode | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (value === '/') return root;
+  return value.endsWith('/') ? findNode(root, value.slice(0, -1)) : findEntry(root, value);
+}
 
 /**
  * Both sides as git snapshots pinned to the commits the comparison resolved, so every later
  * analysis (diffs, blame) describes exactly the trees on screen, even after a fetch.
  */
 function snapshotPair(
-  left: Source,
-  right: Source,
+  left: GitSource,
+  right: GitSource,
   data: DirectoryCompareResult | undefined,
   user: string,
   sessionId: string,
 ): SnapshotPair | undefined {
-  if (left.type !== 'git' || right.type !== 'git' || !data?.leftSnapshot || !data.rightSnapshot) {
-    return undefined;
-  }
+  if (!data?.leftSnapshot || !data.rightSnapshot) return undefined;
   return {
     user,
     sessionId,
@@ -199,34 +222,19 @@ function highlightPaths(footprint: CommitFootprint, analyzed: AttributionInput):
 function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   const [params] = useSearchParams();
   const queryClient = useQueryClient();
-  const location = useLocation();
   const navigate = useNavigate();
+  const workspace = useWorkspace();
   const path = params.get('path') ?? '';
-  const openPath = nonEmpty(params.get('file'));
-  const commitSha = nonEmpty(params.get('commit'));
-  const hunkParam = params.get('hunk');
-  const focusedHunk = hunkParam !== null && /^\d+$/.test(hunkParam) ? Number(hunkParam) : undefined;
-  const isFullFile = params.get('full') === '1';
+  const explainParam = params.get('explain') ?? undefined;
+  const commitParam = params.get('commit');
+  const commitSha = commitParam === null || commitParam === '' ? undefined : commitParam;
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [filter, setFilter] = useState<TreeFilter>('all');
-  const [selected, setSelected] = useState<CompareNode>();
-  const [focusKey, setFocusKey] = useState<string>();
-  const [focusedLine, setFocusedLine] = useState<LineRef>();
   const [startedFolders, setStartedFolders] = useState<ReadonlySet<string>>(() => new Set());
   const [searchFolder, setSearchFolder] = useState<string>();
 
-  const query = useQuery({
-    queryKey: ['compare-directories', user, sessionId, left, right],
-    queryFn: async () => {
-      const result = await compareDirectories({ left, right, user, sessionId });
-      // The comparison is now in the session's recent list.
-      void queryClient.invalidateQueries({ queryKey: sessionKey(user, sessionId) });
-      return result;
-    },
-    staleTime: Infinity,
-  });
-
+  const query = useQuery(folderCompareQuery(queryClient, user, sessionId, left, right));
   const data = query.data;
   const pair = useMemo(
     () => snapshotPair(left, right, data, user, sessionId),
@@ -234,19 +242,10 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   );
   const current = data ? findNode(data.root, path) : undefined;
   const rows = current && isDirectory(current) ? flattenTree(current, expanded, filter) : [];
-  const openNode = data && openPath !== undefined ? findEntry(data.root, openPath) : undefined;
-  const focusNode =
-    focusKey === undefined ? undefined : rows.find((r) => rowKey(r.node) === focusKey)?.node;
 
-  // Attribution follows focus: the open file, else the focused row, else the current folder.
-  const scopeDir =
-    openNode === undefined
-      ? focusNode && isDirectory(focusNode)
-        ? focusNode
-        : focusNode === undefined && current && isDirectory(current)
-          ? current
-          : undefined
-      : undefined;
+  // Only what the user asked to explain is analyzed: a folder, or one file.
+  const explainNode = data ? explained(data.root, explainParam) : undefined;
+  const scopeDir = explainNode && isDirectory(explainNode) ? explainNode : undefined;
   // Not memoized: the hook keys its work on the target paths, not on array identity.
   const dirTargets = scopeDir ? differingFiles(scopeDir) : [];
   const isDirStarted =
@@ -260,16 +259,12 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   }, [searchFolder, data]);
   const search = useDirectoryAttribution(pair, searchTargets, searchFolder !== undefined);
 
-  const fileNode = openNode ?? (focusNode && !isDirectory(focusNode) ? focusNode : undefined);
+  const fileNode = explainNode && !isDirectory(explainNode) ? explainNode : undefined;
   const fileTarget = fileNode ? diffTarget(fileNode) : undefined;
   const isFileDiffable =
     fileNode !== undefined && fileNode.status !== 'identical' && fileNode.status !== 'error';
   const fileQuery = useQuery({
-    ...fileDiffQuery(
-      pair ?? NO_PAIR,
-      fileTarget ?? NO_TARGET,
-      openNode !== undefined && isFullFile,
-    ),
+    ...fileDiffQuery(pair ?? NO_PAIR, fileTarget ?? NO_TARGET),
     enabled: pair !== undefined && fileTarget !== undefined && isFileDiffable,
   });
 
@@ -286,34 +281,38 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   );
   const highlighted = useMemo(() => highlightPaths(footprint, analyzed), [footprint, analyzed]);
 
-  const setSearch = (changes: Record<string, string | undefined>, shouldReplace = false) => {
-    void navigate({ search: withParams(params, changes) }, { replace: shouldReplace });
+  const setSearch = (changes: Record<string, string | undefined>) => {
+    void navigate({ search: withParams(params, changes) });
   };
 
   const goTo = (p: string) => {
-    setSearch({ path: p, file: undefined, hunk: undefined });
+    setSearch({ path: p });
   };
 
-  const openFiles = (l: string | undefined, r: string | undefined) => {
-    const search = new URLSearchParams();
-    if (l !== undefined && l !== '') search.set('left', l);
-    if (r !== undefined && r !== '') search.set('right', r);
-    search.set('from', location.pathname + location.search);
-    void navigate(`${sessionPath(user, sessionId, 'files')}?${search}`);
+  const explain = (node: CompareNode) => {
+    setSearch({ explain: node.path === '' ? '/' : explainValue(node), commit: undefined });
   };
 
-  const absolute = (node: CompareNode, side: 'left' | 'right') =>
-    node[side] && data ? joinPath(data[side], node.path) : undefined;
-
-  const openFile = (key: string, hunk?: number) => {
-    setFocusedLine(undefined);
-    setSearch({ file: key, hunk: hunk === undefined ? undefined : String(hunk) });
+  /** Opens one difference in its own File Compare tab, pinned to the commits on screen. */
+  const openFileTab = (target: DiffTarget, extra: Record<string, string | undefined> = {}) => {
+    if (!pair) return;
+    const url = fileUrl(
+      user,
+      sessionId,
+      { left, right, leftCommit: pair.left.branch, rightCommit: pair.right.branch, target },
+      extra,
+    );
+    // Asked for a specific hunk or commit: show exactly that, even in an open tab.
+    workspace.open(url, { isExact: Object.values(extra).some((v) => v !== undefined) });
   };
 
   const open = (node: CompareNode) => {
-    if (isDirectory(node)) goTo(node.path);
-    else if (pair) openFile(node.path);
-    else openFiles(absolute(node, 'left'), absolute(node, 'right'));
+    if (isDirectory(node)) {
+      goTo(node.path);
+      return;
+    }
+    const target = diffTarget(node);
+    if (target) openFileTab(target);
   };
 
   const toggle = (node: CompareNode) => {
@@ -340,16 +339,20 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   }
 
   const { summary } = query.data;
-  const crumbs = breadcrumbs(openNode ? openNode.path.split('/').slice(0, -1).join('/') : path);
+  const crumbs = breadcrumbs(path);
+  const allDifferences = differingFiles(query.data.root);
+  const isPanelOpen =
+    pair !== undefined &&
+    ((explainParam !== undefined && explainParam !== '') || commitSha !== undefined);
 
-  // What the attribution panel explains.
+  // What the attribution panel explains: the entry the user asked about.
   let scope: AttributionScope = { kind: 'Repository', label: '/' };
   let attribution: ScopeAttribution | undefined;
   let notice: string | undefined;
   let error: string | undefined;
   let progress: AttributionProgress | undefined;
   let onStart: (() => void) | undefined;
-  if (fileNode && fileTarget) {
+  if (fileNode) {
     scope = { kind: 'File', label: fileNode.path };
     const diff = fileQuery.data;
     if (!isFileDiffable) {
@@ -359,27 +362,8 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
           : 'This entry could not be read.';
     } else if (fileQuery.isError) error = fileQuery.error.message;
     else if (diff && diff.content !== 'text') notice = contentNotice[diff.content];
-    else if (diff) {
-      const line =
-        openNode && focusedLine ? diff.hunks[focusedLine.hunk]?.lines[focusedLine.line] : undefined;
-      const hunk = openNode && focusedHunk !== undefined ? diff.hunks[focusedHunk] : undefined;
-      if (line && hunk) {
-        scope = {
-          kind: 'Line',
-          label: `${line.kind === 'removed' ? `Base line ${line.leftLine ?? ''}` : `Target line ${line.rightLine ?? ''}`} · ${fileNode.path}`,
-        };
-        attribution = summarizeAttribution([
-          { key: fileTarget.key, diff, hunks: [{ ...hunk, lines: [line] }] },
-        ]);
-      } else if (hunk && focusedHunk !== undefined) {
-        scope = {
-          kind: 'Hunk',
-          label: `${focusedHunk + 1} of ${diff.hunks.length} · ${fileNode.path}`,
-        };
-        attribution = summarizeAttribution([{ key: fileTarget.key, diff, hunks: [hunk] }]);
-      } else {
-        attribution = summarizeAttribution([{ key: fileTarget.key, diff }]);
-      }
+    else if (diff && fileTarget) {
+      attribution = summarizeAttribution([{ key: fileTarget.key, diff }]);
       if (diff.attributionNote !== undefined && attribution.shares.length === 0) {
         error = diff.attributionNote;
       }
@@ -403,6 +387,8 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
     } else if (dirAttribution.results.length > 0 || !dirAttribution.isRunning) {
       attribution = summarizeAttribution(dirAttribution.results);
     }
+  } else if (explainParam !== undefined && explainParam !== '') {
+    notice = `“${explainParam}” is not part of this comparison.`;
   }
 
   const searchScope = path;
@@ -430,8 +416,13 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
       </button>
     );
 
-  const allDifferences = differingFiles(query.data.root);
-  const openIndex = openNode ? allDifferences.findIndex((t) => t.key === fileTarget?.key) : -1;
+  // The folder on screen can be explained as a whole, unless that is already shown.
+  const canExplainHere =
+    pair !== undefined &&
+    current !== undefined &&
+    isDirectory(current) &&
+    current.status !== 'identical' &&
+    explainNode !== current;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -487,7 +478,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
           ))}
         </div>
         <div className="ml-auto flex items-center gap-1">
-          {current && !openNode && (
+          {current && (
             <>
               <button
                 type="button"
@@ -530,7 +521,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
         <nav aria-label="Breadcrumb">
           <ol className="flex flex-wrap items-center gap-1">
             {crumbs.map((crumb, i) => {
-              const isLast = i === crumbs.length - 1 && !openNode;
+              const isLast = i === crumbs.length - 1;
               const label =
                 crumb.path === '' ? (
                   <span className="flex items-center gap-1">
@@ -549,13 +540,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
                     </span>
                   ) : (
                     <Link
-                      to={{
-                        search: withParams(params, {
-                          path: crumb.path,
-                          file: undefined,
-                          hunk: undefined,
-                        }),
-                      }}
+                      to={{ search: withParams(params, { path: crumb.path }) }}
                       className="text-accent hover:underline"
                     >
                       {label}
@@ -564,162 +549,82 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
                 </li>
               );
             })}
-            {openNode && (
-              <li className="flex items-center gap-1">
-                <ChevronRight className="size-3.5 text-muted" aria-hidden />
-                <span aria-current="page" className="font-mono font-medium">
-                  {openNode.name}
-                </span>
-              </li>
-            )}
           </ol>
         </nav>
-        <Legend />
-      </div>
-
-      {selected && (
-        <div className="flex items-center gap-2 border-b border-line bg-accent-soft px-4 py-1 text-sm">
-          <span className="font-mono">{`Selected: ${selected.path}`}</span>
-          <span className="text-muted">
-            — choose another file and click “Compare with selected”.
-          </span>
-          <button
-            type="button"
-            className="ml-auto text-accent hover:underline"
-            onClick={() => {
-              setSelected(undefined);
-            }}
-          >
-            Clear
-          </button>
+        <div className="flex items-center gap-3">
+          {canExplainHere && (
+            <button
+              type="button"
+              title="Find the commits that account for the differences in this folder"
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-xs hover:bg-hover"
+              onClick={() => {
+                explain(current);
+              }}
+            >
+              <GitCommitHorizontal className="size-3.5" aria-hidden /> Explain differences here
+            </button>
+          )}
+          <Legend />
         </div>
-      )}
+      </div>
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {openNode && pair ? (
-            <FileView
-              node={openNode}
-              diffQuery={fileQuery}
-              leftLabel={`${query.data.leftLabel}${pair.left.branch ? ` (${shortSha(pair.left.branch)})` : ''}`}
-              rightLabel={`${query.data.rightLabel}${pair.right.branch ? ` (${shortSha(pair.right.branch)})` : ''}`}
-              isFullFile={isFullFile}
-              focusedHunk={focusedHunk}
-              focusedLine={focusedLine}
-              highlightCommit={commitSha}
-              position={{ index: openIndex, total: allDifferences.length }}
-              onBack={() => {
-                setFocusedLine(undefined);
-                setSearch({ file: undefined, hunk: undefined });
-              }}
-              onStep={(delta) => {
-                const next = allDifferences[openIndex + delta];
-                if (next) openFile(next.key);
-              }}
-              onToggleFull={() => {
-                setSearch({ full: isFullFile ? undefined : '1', hunk: undefined }, true);
-                setFocusedLine(undefined);
-              }}
-              onOpenEditor={() => {
-                openFiles(
-                  fileTarget?.leftPath === undefined
-                    ? undefined
-                    : joinPath(query.data.left, fileTarget.leftPath),
-                  fileTarget?.rightPath === undefined
-                    ? undefined
-                    : joinPath(query.data.right, fileTarget.rightPath),
-                );
-              }}
-              onFocusHunk={(h) => {
-                if (h !== focusedHunk) setSearch({ hunk: String(h) }, true);
-              }}
-              onFocusLine={setFocusedLine}
-              onSelectCommit={(sha) => {
-                setSearch({ commit: sha });
-              }}
-            />
-          ) : (
-            openPath !== undefined &&
-            pair && (
-              <p className="p-8 text-center text-muted">
-                File <span className="font-mono">“{openPath}”</span> is not part of this comparison.
-              </p>
-            )
-          )}
           <div
-            className={clsx(
-              'flex min-h-0 flex-1 flex-col',
-              openPath !== undefined && pair && 'hidden',
-            )}
+            data-testid="column-labels"
+            className="grid grid-cols-2 border-b border-line bg-surface text-xs font-medium text-muted"
           >
-            <div
-              data-testid="column-labels"
-              className="grid grid-cols-2 border-b border-line bg-surface text-xs font-medium text-muted"
-            >
-              {(['left', 'right'] as const).map((side) => {
-                const label = side === 'left' ? query.data.leftLabel : query.data.rightLabel;
-                const snapshot =
-                  side === 'left' ? query.data.leftSnapshot : query.data.rightSnapshot;
-                return (
-                  <div
-                    key={side}
-                    className={clsx(
-                      'flex min-w-0 gap-1 px-3 py-1 font-mono',
-                      side === 'right' && 'border-l border-line',
-                    )}
-                    title={
-                      snapshot ? `${label} = ${snapshot.commit}` : joinPath(query.data[side], path)
-                    }
-                  >
-                    <span className="truncate">{label}</span>
-                    {snapshot && (
-                      <span className="shrink-0 text-muted/80">{shortSha(snapshot.commit)}</span>
-                    )}
-                    {path && <span className="shrink-0 text-muted/80">/ {path}</span>}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-auto">
-              {current && isDirectory(current) ? (
-                <CompareTree
-                  rows={rows}
-                  selected={selected}
-                  onToggle={toggle}
-                  onOpen={open}
-                  onSelect={setSelected}
-                  onFocusRow={(node) => {
-                    setFocusKey(rowKey(node));
-                  }}
-                  highlighted={highlighted}
-                  onCompareWithSelected={(node) => {
-                    if (!selected) return;
-                    openFiles(
-                      absolute(selected, 'left') ?? absolute(selected, 'right'),
-                      absolute(node, 'right') ?? absolute(node, 'left'),
-                    );
-                  }}
-                />
-              ) : (
-                <div className="p-8 text-center text-muted">
-                  <p className="mb-2">
-                    Folder <span className="font-mono">“{path}”</span> was not found in this
-                    comparison.
-                  </p>
-                  <Link
-                    to={{ search: withParams(params, { path: undefined }) }}
-                    className="text-accent underline"
-                  >
-                    Go to root
-                  </Link>
+            {(['left', 'right'] as const).map((side) => {
+              const label = side === 'left' ? query.data.leftLabel : query.data.rightLabel;
+              const snapshot = side === 'left' ? query.data.leftSnapshot : query.data.rightSnapshot;
+              return (
+                <div
+                  key={side}
+                  className={clsx(
+                    'flex min-w-0 gap-1 px-3 py-1 font-mono',
+                    side === 'right' && 'border-l border-line',
+                  )}
+                  title={
+                    snapshot ? `${label} = ${snapshot.commit}` : joinPath(query.data[side], path)
+                  }
+                >
+                  <span className="truncate">{label}</span>
+                  {snapshot && (
+                    <span className="shrink-0 text-muted/80">{shortSha(snapshot.commit)}</span>
+                  )}
+                  {path && <span className="shrink-0 text-muted/80">/ {path}</span>}
                 </div>
-              )}
-            </div>
+              );
+            })}
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto">
+            {current && isDirectory(current) ? (
+              <CompareTree
+                rows={rows}
+                onToggle={toggle}
+                onOpen={open}
+                {...(pair ? { onExplain: explain } : {})}
+                highlighted={highlighted}
+              />
+            ) : (
+              <div className="p-8 text-center text-muted">
+                <p className="mb-2">
+                  Folder <span className="font-mono">“{path}”</span> was not found in this
+                  comparison.
+                </p>
+                <Link
+                  to={{ search: withParams(params, { path: undefined }) }}
+                  className="text-accent underline"
+                >
+                  Go to root
+                </Link>
+              </div>
+            )}
           </div>
         </div>
 
-        {pair && (
+        {isPanelOpen && (
           <AttributionPanel
             scope={scope}
             attribution={attribution}
@@ -733,166 +638,24 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
             onSelectCommit={(sha) => {
               setSearch({ commit: sha });
             }}
-            onOpenFile={openFile}
+            onOpenFile={(key, hunk) => {
+              const target = allDifferences.find((t) => t.key === key);
+              if (target) {
+                openFileTab(target, {
+                  explain: '1',
+                  hunk: hunk === undefined ? undefined : String(hunk),
+                  commit: commitSha,
+                });
+              }
+            }}
             commitActions={commitActions}
+            onClose={() => {
+              setSearch({ explain: undefined, commit: undefined });
+            }}
           />
         )}
       </div>
     </div>
-  );
-}
-
-type FileViewProps = {
-  node: CompareNode;
-  diffQuery: UseQueryResult<SnapshotFileDiff>;
-  leftLabel: string;
-  rightLabel: string;
-  isFullFile: boolean;
-  focusedHunk: number | undefined;
-  focusedLine: LineRef | undefined;
-  highlightCommit: string | undefined;
-  /** Index of this file among all differences, for previous/next. */
-  position: { index: number; total: number };
-  onBack: () => void;
-  onStep: (delta: number) => void;
-  onToggleFull: () => void;
-  onOpenEditor: () => void;
-  onFocusHunk: (hunk: number) => void;
-  onFocusLine: (line: LineRef | undefined) => void;
-  onSelectCommit: (sha: string) => void;
-};
-
-/** One file of a git comparison: git's hunks with attribution, inside the folder view. */
-function FileView({
-  node,
-  diffQuery,
-  leftLabel,
-  rightLabel,
-  isFullFile,
-  focusedHunk,
-  focusedLine,
-  highlightCommit,
-  position,
-  onBack,
-  onStep,
-  onToggleFull,
-  onOpenEditor,
-  onFocusHunk,
-  onFocusLine,
-  onSelectCommit,
-}: FileViewProps) {
-  const statusText: Record<CompareNode['status'], string> = {
-    identical: 'Identical',
-    modified: 'Different',
-    'only-left': node.renamedTo === undefined ? 'Only in base' : 'Renamed',
-    'only-right': node.renamedFrom === undefined ? 'Only in target' : 'Renamed',
-    error: 'Error',
-  };
-  const diff = diffQuery.data;
-  return (
-    <section aria-label={`File ${node.path}`} className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm">
-        <button
-          type="button"
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-hover"
-          onClick={onBack}
-        >
-          <ArrowLeft className="size-4" aria-hidden /> Folder
-        </button>
-        <span className="min-w-0 truncate font-mono font-medium" title={node.path}>
-          {node.path}
-        </span>
-        <span className="rounded bg-hover px-1.5 text-xs text-muted">
-          {statusText[node.status]}
-        </span>
-        {(node.renamedTo ?? node.renamedFrom) !== undefined && (
-          <span className="text-xs text-muted">
-            {node.renamedTo === undefined
-              ? `from ${node.renamedFrom ?? ''}`
-              : `→ ${node.renamedTo}`}
-            {node.similarity === undefined ? '' : ` (${node.similarity}% similar)`}
-          </span>
-        )}
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            aria-label="Previous difference"
-            title="Previous differing file"
-            disabled={position.index <= 0}
-            className="rounded p-1 text-muted hover:bg-hover disabled:opacity-40"
-            onClick={() => {
-              onStep(-1);
-            }}
-          >
-            <ChevronLeft className="size-4" aria-hidden />
-          </button>
-          <span className="text-xs tabular-nums text-muted">
-            {position.index >= 0 ? `${position.index + 1} / ${position.total}` : ''}
-          </span>
-          <button
-            type="button"
-            aria-label="Next difference"
-            title="Next differing file"
-            disabled={position.index < 0 || position.index >= position.total - 1}
-            className="rounded p-1 text-muted hover:bg-hover disabled:opacity-40"
-            onClick={() => {
-              onStep(1);
-            }}
-          >
-            <ChevronRight className="size-4" aria-hidden />
-          </button>
-          <button
-            type="button"
-            aria-pressed={isFullFile}
-            className={clsx(
-              'flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs',
-              isFullFile
-                ? 'border-accent bg-accent-soft text-accent'
-                : 'border-line hover:bg-hover',
-            )}
-            onClick={onToggleFull}
-          >
-            <Rows3 className="size-3.5" aria-hidden /> Whole file
-          </button>
-          <button
-            type="button"
-            className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-xs hover:bg-hover"
-            title="Side-by-side, syntax-highlighted editor diff of the checked-out files"
-            onClick={onOpenEditor}
-          >
-            <FileCode2 className="size-3.5" aria-hidden /> Open in editor
-          </button>
-        </div>
-      </div>
-      {node.status === 'identical' ? (
-        <p className="m-auto p-8 text-muted">This file is identical in both snapshots.</p>
-      ) : diffQuery.isError ? (
-        <div
-          role="alert"
-          className="m-4 rounded-md border border-error/40 bg-error-soft p-4 text-error"
-        >
-          {diffQuery.error.message}
-        </div>
-      ) : !diff ? (
-        <p className="m-auto flex items-center gap-2 p-8 text-muted">
-          <LoaderCircle className="size-4 animate-spin" aria-hidden /> Diffing and attributing…
-        </p>
-      ) : diff.content === 'text' ? (
-        <SnapshotDiffView
-          diff={diff}
-          leftLabel={leftLabel}
-          rightLabel={rightLabel}
-          focusedHunk={focusedHunk}
-          focusedLine={focusedLine}
-          highlightCommit={highlightCommit}
-          onFocusHunk={onFocusHunk}
-          onFocusLine={onFocusLine}
-          onSelectCommit={onSelectCommit}
-        />
-      ) : (
-        <p className="m-auto max-w-md p-8 text-center text-muted">{contentNotice[diff.content]}</p>
-      )}
-    </section>
   );
 }
 

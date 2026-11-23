@@ -16,15 +16,15 @@ precise git meaning of each answer. Code: `apps/server/src/snapshot/`, `apps/ser
 | **Upstream / downstream** | Roles introduced only by the Upstream page: upstream = Base (`left*` in the URL), downstream = Target (`right*`). The same URLs carry snapshots between Folders and Upstream.                                                                                               |
 | **Applicability**         | What applying one upstream commit (its change against its first parent) to the pristine downstream snapshot does, computed with `git merge-tree`.                                                                                                                           |
 
-## Attribution follows focus
+## Attribution on request, scoped to the focus
 
-The attribution panel in Folders (git snapshots on both sides) explains the narrowest thing in focus:
+Folder Compare and File Compare first show only what differs. Attribution is computed when the user asks (**Explain difference**), for exactly what they asked about, and then narrows with focus inside a file:
 
 | Focus                              | Scope                                               | Source                                                                   |
 | ---------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
-| current folder (nothing focused)   | Repository or Folder: every differing file under it | one file diff per differing file, 4 at a time, aggregated in the browser |
-| a folder row                       | that folder                                         | same                                                                     |
-| a file row, or an open file        | File                                                | one `POST /api/snapshot/file-diff`                                       |
+| "Explain differences here"         | Repository or Folder: every differing file under it | one file diff per differing file, 4 at a time, aggregated in the browser |
+| "Explain difference" on a folder   | that folder                                         | same                                                                     |
+| "Explain difference" on a file     | File                                                | one `POST /api/snapshot/file-diff`                                       |
 | a hunk (click its header, `n`/`p`) | Hunk                                                | the hunk's lines                                                         |
 | a line (click it, `j`/`k`)         | Line                                                | that line's commit                                                       |
 | a commit (`commit=` in the URL)    | Commit details and its footprint                    | every file diff analyzed so far in this comparison                       |
@@ -35,7 +35,8 @@ Rules the panel keeps:
 - **A hunk keeps every commit.** Counts are per commit and per side; a hunk is never forced into one commit.
 - **Shared history is labelled.** A commit reachable from both snapshots (`inLeft` and `inRight`) accounts for content both once had; the difference comes from the other side changing or removing it. Such commits are grouped after the one-sided ones under "Shared history".
 - **Unattributed lines are counted.** Binary or oversized files, and lines where blame failed, show as "N of M changed lines have no attribution".
-- **Large folders wait.** More than 40 differing files: attribution starts on a click. The tree is navigable immediately either way.
+- **Nothing is attributed unasked.** Opening a comparison or a file runs no `git blame`: File Compare requests the plain diff (`attribute: false`); the explained diff is fetched only after "Explain difference".
+- **Large folders still confirm.** Asked to explain more than 40 differing files, the panel says how many and starts on a click. The tree is navigable immediately either way.
 - **Commit → differences.** Selecting a commit lists the files and hunks it accounts for among analyzed files, highlights them (and their folders) in the tree, and dims other lines in the diff. "Search every difference under …" analyzes the current folder to find the rest.
 
 ## Applicability states
@@ -73,17 +74,17 @@ Applicability runs `merge-tree` with `GIT_OBJECT_DIRECTORY` pointed at a fresh s
 
 The audit before this work, against the product contract:
 
-| Capability                       | Before                                                                        | Now                                                                                                            |
-| -------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Snapshot model                   | PARTIAL: git sides were "repo @ branch"; branch tips only; no commit identity | Resolved commit per side; branch, tag or SHA                                                                   |
-| Folder compare                   | COMPLETE for statuses, sort, URL state                                        | Kept as is                                                                                                     |
-| Renames                          | MISSING (decision 2 declined it)                                              | Git rename detection links one-sided entries for git sides                                                     |
-| Text compare                     | PARTIAL: path-based Monaco diff with its own diff engine, no hunk model       | Git's hunks for git snapshots, in place, with direction, focus and attribution; Monaco kept ("Open in editor") |
-| Attribution (folder → line)      | MISSING                                                                       | Directional blame at every scope, commit → differences                                                         |
-| Upstream history / applicability | MISSING (Lab placeholder)                                                     | Upstream page                                                                                                  |
-| Cross-remote analysis            | ARCHITECTURALLY LIMITING: one clone per remote, no shared object view         | Object views via alternates in the environment (no clone is modified)                                          |
-| Abort signals on git operations  | MISSING (open item in CONTRIBUTING)                                           | Analysis commands take an `AbortSignal`; clone/fetch/checkout still don't                                      |
-| Real-git test fixtures           | PARTIAL: tiny origin repo, no pinned seed, machine git identity mixed in      | Pinned Hello-World seed bundle, deterministic scenarios, real partial clones, remote smoke test                |
+| Capability                       | Before                                                                        | Now                                                                                                   |
+| -------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Snapshot model                   | PARTIAL: git sides were "repo @ branch"; branch tips only; no commit identity | Resolved commit per side; branch, tag or SHA                                                          |
+| Folder compare                   | COMPLETE for statuses, sort, URL state                                        | Kept as is                                                                                            |
+| Renames                          | MISSING (decision 2 declined it)                                              | Git rename detection links one-sided entries for git sides                                            |
+| Text compare                     | PARTIAL: path-based Monaco diff with its own diff engine, no hunk model       | Git's hunks for git snapshots in a File Compare tab, with direction, focus and on-request attribution |
+| Attribution (folder → line)      | MISSING                                                                       | Directional blame at every scope, commit → differences                                                |
+| Upstream history / applicability | MISSING (Lab placeholder)                                                     | Upstream page                                                                                         |
+| Cross-remote analysis            | ARCHITECTURALLY LIMITING: one clone per remote, no shared object view         | Object views via alternates in the environment (no clone is modified)                                 |
+| Abort signals on git operations  | MISSING (open item in CONTRIBUTING)                                           | Analysis commands take an `AbortSignal`; clone/fetch/checkout still don't                             |
+| Real-git test fixtures           | PARTIAL: tiny origin repo, no pinned seed, machine git identity mixed in      | Pinned Hello-World seed bundle, deterministic scenarios, real partial clones, remote smoke test       |
 
 ## Known limits
 

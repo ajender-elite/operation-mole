@@ -11,16 +11,40 @@
 ## What it does
 
 - **Sessions per user:** sign in with a username, then create or reopen a session. Each session keeps its own cloned repos and a list of recent comparisons.
-- **Folders:** compare a **Base** and a **Target**, byte for byte. Each side is either a local folder or a branch of a git repo.
+- **Folders:** compare a **Base** and a **Target**, byte for byte. Each side is a git repository (given by its URL, since Base and Target may live on different remotes) and a branch you choose.
   - Green means only in base, blue means only in target, and orange means different. Identical entries keep the default color, and a folder gets an orange dot when something inside it differs.
   - Folders are listed first, then files, each in natural, case-insensitive order (`file2` before `file10`).
-  - With two **git** snapshots (a branch, tag or commit on each side, from one remote or two), OM also explains the differences:
+  - OM also explains the differences:
     - each side shows the exact commit it resolved to, and renamed files are linked;
-    - a side panel lists the commits that currently account for the differences in whatever you focus (the whole repository, a folder, a file, a hunk, a line), from `git blame` on each line's own side, marking commits both histories share;
-    - files open in place as git's hunks with each changed line's commit; select a commit to see every difference it accounts for.
-- **Files:** a side-by-side or inline diff using Monaco, the diff editor from VS Code. Binary and very large files get a summary with size and SHA-256 instead.
+    - files open in their own **File Compare** tab, as git's hunks;
+    - on request (**Explain difference**), a side panel lists the commits that currently account for the differences in what you are looking at (the whole comparison, a folder, a file, a hunk, a line), from `git blame` on each line's own side, marking commits both histories share. Select a commit to see every difference it accounts for. Nothing is attributed until you ask.
 - **Upstream:** pick an upstream and a downstream branch and a window of upstream commits (last N, since a date, mainline only, hide what downstream has). Each commit is applied on its own to the same downstream commit with `git merge-tree` and reported as **clean apply**, **already represented** (same commit, equivalent patch, or equivalent content), **conflicting apply** or **unknown**, with the evidence: per-file outcomes, conflict excerpts, equivalent commits and the patch. Nothing is written to any repository.
 - **Light and dark mode:** switch with the sun/moon button at the top right.
+
+## Quick start
+
+You need **Node.js 26+** and **git** (`node -v`, `git --version`). The same steps work on Linux, macOS and Windows (Terminal, PowerShell or Command Prompt).
+
+**If you have a release archive** (`om-<version>.tar.gz`, for example from a colleague), there is nothing to install or build:
+
+```bash
+tar -xzf om-<version>.tar.gz
+cd om-<version>
+node apps/server/src/index.ts --production
+```
+
+**If you cloned this repository**, install pnpm once, then build and run:
+
+```bash
+npm install -g pnpm@12.21.0
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start
+```
+
+Either way, open http://127.0.0.1:5181. Enter a username, create a session, and add a git repository URL; OM shows what you can do next.
+
+To run OM on **another machine** without cloning there, make an archive with `pnpm release` (see [Build a release](#build-a-release-to-run-anywhere)) and copy `releases/om-<version>.tar.gz` over.
 
 ## Setup
 
@@ -76,6 +100,18 @@ pnpm start
 
 This serves the built app and the API together on http://127.0.0.1:5181.
 
+### Build a release to run anywhere
+
+To run OM on another machine without cloning, installing or building there, make an archive on a machine that has this repository installed:
+
+```bash
+pnpm release
+```
+
+This creates `releases/om-<version>/` and `releases/om-<version>.tar.gz` (about 5 MB; `<version>` comes from `git describe`, with `-dirty` for uncommitted changes). The release holds the server, the built web app and its production dependencies. They are all plain JavaScript and TypeScript source, so the same archive runs on **Linux, macOS and Windows**. Before packing it, the script starts the release once and checks that the app and the API answer.
+
+Copy the `.tar.gz` to the other machine and run it as in [Quick start](#quick-start); it needs only **Node.js 26+** and **git** there. `tar` is built into Windows 10 and later (Command Prompt or PowerShell), and Windows 11 File Explorer can also extract it. A `README.md` inside the archive repeats how to run it. The same environment variables apply (see [Configuration](#configuration)). Set `OM_DATA_DIR` to keep your sessions when you replace the folder with a newer release; by default they are in `.data/` inside it. `releases/` is not committed.
+
 ### Check against the real public test repository
 
 ```bash
@@ -100,18 +136,18 @@ The server reads a few optional environment variables (port, host, default folde
 
 1. **Username:** letters, digits, `.`, `-` or `_`. It's remembered on this device; **Switch user** on the sessions page clears it.
 2. **Session:** create one or pick an existing one. Deleting a session also deletes every repo cloned in it.
-3. **Overview:** shows the session's recent comparisons (click one to reopen it) and its repositories, each with a **Fetch latest** button.
+3. **Overview:** with no repository yet, it only asks you to add one. Then it shows what you can do with it: compare two snapshots (**Compare folders**, or **Check upstream commits** with the same choice), reopen a recent comparison, and keep the repositories current with **Fetch latest**.
+4. **Tabs:** each Folder Compare, File Compare and Upstream analysis opens in its own tab next to the Overview. Switching tabs keeps each one as you left it (folder, expanded rows, filters, scroll). Opening something that is already open focuses its tab instead of opening another. Open tabs survive a reload of the browser tab.
 
 There are no passwords. Anyone who can reach the app and types your username can see your sessions, so only expose OM to people you trust.
 
 ### Comparing git branches
 
-1. In **Folders**, switch Base or Target from **Folder** to **Git repo**.
-2. Choose a repo already in the session, or choose **Add a repository…**, paste its URL and click **Clone**.
+1. In **Folders**, for each of Base and Target, paste the repository URL and click **Clone**, or pick a repository already in the session. The two sides can use different remotes.
    - Supported URLs: `https://…`, `ssh://…` and `git@host:org/repo.git`.
    - Private repos work if the server machine's git can already reach them (SSH keys or a credential helper). OM never asks for or stores passwords or tokens.
-3. Pick a branch. It defaults to the repo's default branch.
-4. Click **Compare**.
+2. Pick a branch for each side. Nothing is preselected, so you always choose it explicitly.
+3. Click **Compare**.
 
 How clones work:
 
@@ -123,8 +159,8 @@ How clones work:
 ### Moving around
 
 - **Double-click** a folder, or press **Enter**, to open it. The breadcrumb takes you back up. Chevrons expand folders in place.
-- **Double-click** a file to open its diff. The back link returns you to the same folder.
-- To compare two files with different names: hover one, click **Select for compare**, then click **Compare with selected** on the other.
+- **Double-click** a file to open it in a File Compare tab. **Folder compare** goes back to the folder tab as you left it; the arrows step through the other differences.
+- **Explain difference** (on a differing row, on the current folder, or in File Compare) shows which commits account for exactly that difference. In a file, click a hunk header or a line to narrow it further. Close the panel to go back to just the difference.
 - Everything is kept in the URL (session, sources, branches, current folder), so reloading, bookmarks and Back/Forward all work.
 
 ## Configuration
@@ -132,7 +168,7 @@ How clones work:
 | Variable               | Default                            | Purpose                                                                                                           |
 | ---------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `OM_DATA_DIR`          | `.data/` in the project            | Database and cloned repos. Excluded from git.                                                                     |
-| `OM_LEFT` / `OM_RIGHT` | `examples/left` / `examples/right` | Folders a new comparison opens with                                                                               |
+| `OM_LEFT` / `OM_RIGHT` | `examples/left` / `examples/right` | API defaults (`GET /api/defaults`); the web app no longer opens them, since it compares git repositories only     |
 | `API_PORT`             | `5181`                             | API port                                                                                                          |
 | `HOST`                 | `127.0.0.1`                        | API bind address. The API reads any local path and runs git, so keep it on loopback unless you trust the network. |
 
