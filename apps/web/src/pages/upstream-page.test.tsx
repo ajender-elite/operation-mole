@@ -118,6 +118,17 @@ beforeEach(() => {
     http.post('*/api/upstream/patch', () =>
       HttpResponse.json<CommitPatch>({
         commit: sha(2),
+        details: {
+          sha: sha(2),
+          subject: 'Subject',
+          authorName: 'A',
+          authorEmail: 'a@example.com',
+          authorDate: '2026-01-01T00:00:00Z',
+          committerName: 'A',
+          committerEmail: 'a@example.com',
+          commitDate: '2026-01-01T00:00:00Z',
+          parents: [sha(3)],
+        },
         baseParent: sha(3),
         truncated: false,
         files: [

@@ -22,6 +22,11 @@
   --color-right: #1e40af;
   --color-right-soft: #dbeafe;
   --color-right-dot: #3b82f6;
+  /* Side-by-side File Compare: Base is blue, Target is green (a pane, not an add/remove color). */
+  --color-base: #1e40af;
+  --color-base-soft: #dbeafe;
+  --color-target: #166534;
+  --color-target-soft: #dcfce7;
   --color-modified: #9a3412;
   --color-modified-soft: #ffedd5;
   --color-modified-dot: #f97316;
@@ -63,6 +68,10 @@
   --color-left-soft: #052e16;
   --color-right: #93c5fd;
   --color-right-soft: #172554;
+  --color-base: #93c5fd;
+  --color-base-soft: #172554;
+  --color-target: #86efac;
+  --color-target-soft: #052e16;
   --color-modified: #fdba74;
   --color-modified-soft: #431407;
   --color-error: #fca5a5;
@@ -87,6 +96,10 @@
     --color-left-soft: #052e16;
     --color-right: #93c5fd;
     --color-right-soft: #172554;
+    --color-base: #93c5fd;
+    --color-base-soft: #172554;
+    --color-target: #86efac;
+    --color-target-soft: #052e16;
     --color-modified: #fdba74;
     --color-modified-soft: #431407;
     --color-error: #fca5a5;

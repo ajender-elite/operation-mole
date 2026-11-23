@@ -148,6 +148,11 @@ export const UpstreamCommitsRequestSchema = UpstreamPairSchema.extend({
   firstParent: z.boolean().default(false),
   /** Leave out commits that downstream already contains (`upstream ^downstream`). */
   hideReachable: z.boolean().default(false),
+  /**
+   * Only commits that changed at least one of these paths in upstream (`git log -- paths`).
+   * Literal paths, not pathspec patterns.
+   */
+  paths: z.array(RepoPathSchema).max(100).optional(),
 });
 /** What clients send. See {@link UpstreamCommitsRequestSchema}. */
 export type UpstreamCommitsRequest = z.input<typeof UpstreamCommitsRequestSchema>;

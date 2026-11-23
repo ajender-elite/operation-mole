@@ -6,7 +6,6 @@ import {
   GitCommitHorizontal,
   Home,
   LoaderCircle,
-  Pencil,
   RefreshCw,
   Search,
 } from 'lucide-react';
@@ -47,6 +46,7 @@ import {
   findEntry,
   findNode,
   flattenTree,
+  countUnder,
   isDirectory,
   joinPath,
   type TreeFilter,
@@ -88,7 +88,6 @@ export function DirectoryComparePage(): JSX.Element {
   const { user, sessionId } = useSessionParams();
   const session = useSessionDetail(user, sessionId);
   const workspace = useWorkspace();
-  const [isEditing, setIsEditing] = useState(false);
   const left = sourceFromParams(params, 'left');
   const right = sourceFromParams(params, 'right');
   const key = JSON.stringify([left, right]);
@@ -103,7 +102,6 @@ export function DirectoryComparePage(): JSX.Element {
       user={user}
       sessionId={sessionId}
       onSubmit={(l, r) => {
-        setIsEditing(false);
         // A different pair is a different context: it takes this tab's place.
         workspace.open(foldersUrl(user, sessionId, l, r), { isReplacing: true });
       }}
@@ -123,28 +121,15 @@ export function DirectoryComparePage(): JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {isEditing ? (
-        <div className="border-b border-line bg-surface px-4 py-3">{form}</div>
-      ) : (
-        <div className="flex items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm">
-          <span className="min-w-0 truncate">
-            <span className="text-muted">Base</span>{' '}
-            <span className="font-mono text-left">{sourceLabel(left, repos)}</span>
-            <span className="px-2 text-muted">↔</span>
-            <span className="text-muted">Target</span>{' '}
-            <span className="font-mono text-right">{sourceLabel(right, repos)}</span>
-          </span>
-          <button
-            type="button"
-            className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted hover:bg-hover hover:text-ink"
-            onClick={() => {
-              setIsEditing(true);
-            }}
-          >
-            <Pencil className="size-3.5" aria-hidden /> Change
-          </button>
-        </div>
-      )}
+      <div className="flex items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm">
+        <span className="min-w-0 truncate">
+          <span className="text-muted">Base</span>{' '}
+          <span className="font-mono text-left">{sourceLabel(left, repos)}</span>
+          <span className="px-2 text-muted">↔</span>
+          <span className="text-muted">Target</span>{' '}
+          <span className="font-mono text-right">{sourceLabel(right, repos)}</span>
+        </span>
+      </div>
       <Comparison key={key} left={left} right={right} user={user} sessionId={sessionId} />
     </div>
   );
@@ -233,6 +218,8 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   const [filter, setFilter] = useState<TreeFilter>('all');
   const [startedFolders, setStartedFolders] = useState<ReadonlySet<string>>(() => new Set());
   const [searchFolder, setSearchFolder] = useState<string>();
+  // Folder statistics are not shown until asked for.
+  const [isShowingStats, setShowingStats] = useState(false);
 
   const query = useQuery(folderCompareQuery(queryClient, user, sessionId, left, right));
   const data = query.data;
@@ -338,7 +325,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
     );
   }
 
-  const { summary } = query.data;
+  const stats = countUnder(current ?? query.data.root);
   const crumbs = breadcrumbs(path);
   const allDifferences = differingFiles(query.data.root);
   const isPanelOpen =
@@ -427,30 +414,52 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 text-sm">
-        <div role="group" aria-label="Summary" className="flex flex-wrap gap-1">
-          {chips.map((chip) =>
-            chip.key === 'errors' && summary.errors === 0 ? null : (
-              <button
-                key={chip.key}
-                type="button"
-                aria-pressed={filter === chip.filter}
-                title={`Filter to: ${chip.label}`}
-                onClick={() => {
-                  setFilter(filter === chip.filter ? 'all' : chip.filter);
-                }}
-                className={clsx(
-                  'flex items-center gap-1.5 rounded-full border px-2.5 py-0.5',
-                  filter === chip.filter
-                    ? 'border-accent bg-accent-soft'
-                    : 'border-line hover:bg-hover',
-                )}
-              >
-                <span className={clsx('size-2 rounded-full', chip.dot)} aria-hidden />
-                {chip.label} <span className="font-semibold tabular-nums">{summary[chip.key]}</span>
-              </button>
-            ),
-          )}
-        </div>
+        {isShowingStats ? (
+          <div role="group" aria-label="Summary" className="flex flex-wrap items-center gap-1">
+            {chips.map((chip) =>
+              chip.key === 'errors' && stats.errors === 0 ? null : (
+                <button
+                  key={chip.key}
+                  type="button"
+                  aria-pressed={filter === chip.filter}
+                  title={`Filter to: ${chip.label}`}
+                  onClick={() => {
+                    setFilter(filter === chip.filter ? 'all' : chip.filter);
+                  }}
+                  className={clsx(
+                    'flex items-center gap-1.5 rounded-full border px-2.5 py-0.5',
+                    filter === chip.filter
+                      ? 'border-accent bg-accent-soft'
+                      : 'border-line hover:bg-hover',
+                  )}
+                >
+                  <span className={clsx('size-2 rounded-full', chip.dot)} aria-hidden />
+                  {chip.label} <span className="font-semibold tabular-nums">{stats[chip.key]}</span>
+                </button>
+              ),
+            )}
+            <button
+              type="button"
+              className="rounded px-2 py-0.5 text-xs text-muted hover:bg-hover"
+              onClick={() => {
+                setShowingStats(false);
+              }}
+            >
+              Hide statistics
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            aria-expanded={false}
+            className="rounded-full border border-line px-2.5 py-0.5 text-xs text-muted hover:bg-hover"
+            onClick={() => {
+              setShowingStats(true);
+            }}
+          >
+            Show current directory statistics
+          </button>
+        )}
         <div
           role="radiogroup"
           aria-label="Show"

@@ -40,6 +40,25 @@ describe('tabIdentity', () => {
     expect(tabKind(FOLDERS, BASE)).toBe('folders');
     expect(tabKind(FILE('a.ts'), BASE)).toBe('file');
     expect(tabKind(`${BASE}/upstream`, BASE)).toBe('upstream');
+    expect(tabKind(`${BASE}/commit?repo=r1&commit=abc`, BASE)).toBe('commit');
+    expect(tabKind(`${BASE}/commits?side=left`, BASE)).toBe('commits');
+  });
+
+  it('identifies a commit by its repo and SHA, so opening it twice reuses one tab', () => {
+    const commit = (sha: string, repo = 'r1') => `${BASE}/commit?repo=${repo}&commit=${sha}`;
+    expect(tabIdentity(`${commit('abc')}&ignored=1`, BASE)).toBe(tabIdentity(commit('abc'), BASE));
+    expect(tabIdentity(commit('abc'), BASE)).not.toBe(tabIdentity(commit('def'), BASE));
+    expect(tabIdentity(commit('abc'), BASE)).not.toBe(tabIdentity(commit('abc', 'r2'), BASE));
+  });
+
+  it('identifies a commit list by its side and the pinned snapshots and file', () => {
+    const list = (side: string, commits = ['a', 'b'], path = 'a.ts') =>
+      `${BASE}/commits?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev&leftCommit=${commits[0] ?? ''}&rightCommit=${commits[1] ?? ''}&leftPath=${path}&rightPath=${path}&side=${side}`;
+    // Where the user is inside the list (focused hunk) does not make another tab.
+    expect(tabIdentity(`${list('left')}&hunk=1`, BASE)).toBe(tabIdentity(list('left'), BASE));
+    // Base and Target commit lists are separate tabs.
+    expect(tabIdentity(list('left'), BASE)).not.toBe(tabIdentity(list('right'), BASE));
+    expect(tabIdentity(list('left', ['c', 'd']), BASE)).not.toBe(tabIdentity(list('left'), BASE));
   });
 });
 

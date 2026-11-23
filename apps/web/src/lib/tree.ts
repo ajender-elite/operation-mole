@@ -1,4 +1,4 @@
-import type { CompareNode, CompareStatus } from '@om/shared';
+import type { CompareNode, CompareStatus, CompareSummary } from '@om/shared';
 
 /** Which entries the tree shows. A status shows entries with that status (and folders containing them). */
 export type TreeFilter = 'all' | 'differences' | CompareStatus;
@@ -109,4 +109,43 @@ export function joinPath(root: string, rel: string): string {
   if (rel === '') return root;
   const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
   return `${root.replace(/[\\/]+$/, '')}${sep}${rel.split('/').join(sep)}`;
+}
+
+/**
+ * How many files (and symlinks) of each status lie under a node: the statistics of one folder.
+ * Folders themselves are not counted; a one-sided folder counts its contents.
+ */
+export function countUnder(node: CompareNode): CompareSummary {
+  const counts: CompareSummary = {
+    identical: 0,
+    modified: 0,
+    onlyLeft: 0,
+    onlyRight: 0,
+    errors: 0,
+  };
+  const visit = (n: CompareNode): void => {
+    if (n.children) {
+      for (const child of n.children) visit(child);
+      return;
+    }
+    switch (n.status) {
+      case 'identical':
+        counts.identical += 1;
+        break;
+      case 'modified':
+        counts.modified += 1;
+        break;
+      case 'only-left':
+        counts.onlyLeft += 1;
+        break;
+      case 'only-right':
+        counts.onlyRight += 1;
+        break;
+      case 'error':
+        counts.errors += 1;
+        break;
+    }
+  };
+  visit(node);
+  return counts;
 }

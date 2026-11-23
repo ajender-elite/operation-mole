@@ -132,18 +132,10 @@ describe('SessionOverviewPage', () => {
     expect(app.search().get('leftBranch')).toBe('main');
   });
 
-  it('reopens recent git comparisons, hiding folder ones', async () => {
-    const user = userEvent.setup();
-    const app = renderApp(OVERVIEW);
-    const list = await screen.findByRole('list', { name: /recent comparisons/i });
-    const items = within(list).getAllByRole('button');
-    expect(items).toHaveLength(1);
-    expect(items[0]).toHaveAccessibleName(/app @ main.*app @ dev/);
-    await user.click(items[0] ?? list);
-    await waitFor(() => {
-      expect(app.location().pathname).toBe(`${OVERVIEW}/folders`);
-    });
-    expect(app.search().get('rightBranch')).toBe('dev');
+  it('does not list recent comparisons: new ones are opened from here, not reopened', async () => {
+    renderApp(OVERVIEW);
+    expect(await screen.findByRole('heading', { name: /compare two snapshots/i })).toBeVisible();
+    expect(screen.queryByRole('list', { name: /recent comparisons/i })).not.toBeInTheDocument();
   });
 
   it('lists the session’s repos with their branches', async () => {

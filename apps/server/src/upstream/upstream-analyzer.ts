@@ -49,6 +49,8 @@ export type CommitWindow = {
   since?: string | undefined;
   firstParent: boolean;
   hideReachable: boolean;
+  /** Only commits that changed at least one of these literal paths. */
+  paths?: readonly string[] | undefined;
 };
 
 type ChangedFile = { status: string; path: string; oldPath?: string };
@@ -171,7 +173,8 @@ export class UpstreamAnalyzer {
     if (window.firstParent) args.push('--first-parent');
     args.push(upstream.commit);
     if (window.hideReachable) args.push(`^${downstream.commit}`);
-    args.push('--');
+    // After `--` the paths are read literally (no option or pathspec-magic interpretation).
+    args.push('--', ...(window.paths ?? []));
     const { stdout } = await this.#git.run(view.cwd, args, {
       env: view.env,
       ...(signal ? { signal } : {}),
@@ -235,8 +238,16 @@ export class UpstreamAnalyzer {
         hunks: parsed.hunks,
       };
     });
+    const logged = await this.#git.run(
+      upstream.repoDir,
+      ['log', '-1', '-z', `--format=${COMMIT_FORMAT}`, commit, '--'],
+      opt,
+    );
+    const [details] = parseCommitRecords(logged.stdout);
+    if (details === undefined) throw new Error(`Commit ${commit} not found`);
     return {
       commit,
+      details,
       ...(parents[0] === undefined ? {} : { baseParent: parents[0] }),
       files,
       truncated: isTruncated,

@@ -10,7 +10,7 @@
 
 ## What it does
 
-- **Sessions per user:** sign in with a username, then create or reopen a session. Each session keeps its own cloned repos and a list of recent comparisons.
+- **Sessions per user:** sign in with a username, then create or reopen a session. Each session keeps its own cloned repos.
 - **Folders:** compare a **Base** and a **Target**, byte for byte. Each side is a git repository (given by its URL, since Base and Target may live on different remotes) and a branch you choose.
   - Green means only in base, blue means only in target, and orange means different. Identical entries keep the default color, and a folder gets an orange dot when something inside it differs.
   - Folders are listed first, then files, each in natural, case-insensitive order (`file2` before `file10`).
@@ -133,7 +133,7 @@ The server reads a few optional environment variables (port, host, data folder).
 
 1. **Username:** letters, digits, `.`, `-` or `_`. It's remembered on this device; **Switch user** on the sessions page clears it.
 2. **Session:** create one or pick an existing one. Deleting a session also deletes every repo cloned in it.
-3. **Overview:** with no repository yet, it only asks you to add one. Then it shows what you can do with it: compare two snapshots (**Compare folders**, or **Check upstream commits** with the same choice), reopen a recent comparison, and keep the repositories current with **Fetch latest**.
+3. **Overview:** with no repository yet, it only asks you to add one. Then it shows what you can do with it: compare two snapshots (**Compare folders**, or **Check upstream commits** with the same choice), and keep the repositories current with **Fetch latest**.
 4. **Tabs:** each Folder Compare, File Compare and Upstream analysis opens in its own tab next to the Overview. Switching tabs keeps each one as you left it (folder, expanded rows, filters, scroll). Opening something that is already open focuses its tab instead of opening another. Open tabs survive a reload of the browser tab.
 
 There are no passwords. Anyone who can reach the app and types your username can see your sessions, so only expose OM to people you trust.

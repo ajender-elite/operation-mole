@@ -159,6 +159,9 @@ export type CommitInfo = {
   commitDate: string;
 };
 
+/** A commit's git metadata plus its parents, in order (first parent first). */
+export type CommitDetails = CommitInfo & { parents: string[] };
+
 /**
  * A commit that currently accounts for at least one differing line (`git blame` on that
  * line's own side). It is NOT necessarily the commit that first introduced the content or
@@ -316,6 +319,8 @@ export type PatchFile = {
 /** Response of `POST /api/upstream/patch`: a commit's changes against its first parent. */
 export type CommitPatch = {
   commit: string;
+  /** The commit's own git metadata, as `git log` reports it. */
+  details: CommitDetails;
   baseParent?: string;
   files: PatchFile[];
   /** True when files or lines were left out to keep the response small. */

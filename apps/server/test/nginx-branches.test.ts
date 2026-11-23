@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { CompareNode, DirectoryCompareResult, GitSource, RepoInfo } from '@om/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -24,7 +25,7 @@ const side = (branch: string): GitSource => om.source(repo, branch);
 
 beforeAll(async () => {
   base = await mkdtemp(path.join(tmpdir(), 'om-nginx-'));
-  const url = nginxRepo(path.join(base, 'nginx.git'));
+  const url = nginxRepo();
   app = buildApp({ dataDir: path.join(base, 'data'), allowedProtocols: ['https', 'ssh', 'file'] });
   await app.ready();
   om = await new OmClient(app, 'nginx').start();
@@ -168,5 +169,15 @@ describe('a file diff between the nginx branches', () => {
     expect(diff.commits.map((c) => c.sha).sort()).toEqual(
       [NGINX_1_26.commit, NGINX_1_28.commit].sort(),
     );
+  });
+});
+
+describe('nginx fixture', () => {
+  it('is built once and reused by later calls', async () => {
+    const first = nginxRepo();
+    const head = path.join(fileURLToPath(first), 'HEAD');
+    const before = (await stat(head)).mtimeMs;
+    expect(nginxRepo()).toBe(first);
+    expect((await stat(head)).mtimeMs).toBe(before);
   });
 });

@@ -1,8 +1,10 @@
+import type { CompareNode } from '@om/shared';
 import { describe, expect, it } from 'vitest';
 import { root } from '../test/fixtures.ts';
 import {
   breadcrumbs,
   collectDirectoryPaths,
+  countUnder,
   findNode,
   flattenTree,
   joinPath,
@@ -128,3 +130,32 @@ describe('rowKey', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
+
+describe('countUnder', () => {
+  it('counts the files under a folder by status, not the folders themselves', () => {
+    const counts = countUnder(root);
+    expect(counts).toEqual({
+      identical: countStatus('identical'),
+      modified: countStatus('modified'),
+      onlyLeft: countStatus('only-left'),
+      onlyRight: countStatus('only-right'),
+      errors: countStatus('error'),
+    });
+    expect(counts.onlyLeft).toBeGreaterThan(0);
+  });
+  it('only counts what lies under the given folder', () => {
+    const docs = findNode(root, 'docs');
+    if (!docs) throw new Error('fixture has no docs folder');
+    const all = countUnder(root);
+    const inDocs = countUnder(docs);
+    expect(inDocs.onlyLeft).toBeLessThanOrEqual(all.onlyLeft);
+    expect(inDocs.onlyLeft).toBeGreaterThan(0);
+  });
+});
+
+/** Files of one status in the whole fixture, walked independently of countUnder. */
+function countStatus(status: string): number {
+  const walk = (n: CompareNode): number =>
+    n.children ? n.children.reduce((sum, c) => sum + walk(c), 0) : n.status === status ? 1 : 0;
+  return walk(root);
+}

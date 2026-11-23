@@ -216,7 +216,7 @@ interface DivergenceCommit {
 
 ### `POST /api/upstream/commits`
 
-Body: `{ upstream, downstream, user, sessionId, limit = 20 (1–200), since?: 'YYYY-MM-DD', firstParent = false, hideReachable = false }`. `since` is `git log --since` (commit date, from the start of that day in server time). `hideReachable` lists `upstream ^downstream`.
+Body: `{ upstream, downstream, user, sessionId, limit = 20 (1–200), since?: 'YYYY-MM-DD', firstParent = false, hideReachable = false }`. `since` is `git log --since` (commit date, from the start of that day in server time). `hideReachable` lists `upstream ^downstream`. `paths` (up to 100 literal repository paths) keeps only the commits that changed at least one of them (`git log -- paths`, read literally, never as pathspec patterns). The filter is generic: any client can ask for any path, and the UI composes its lists from these answers.
 
 ```ts
 interface UpstreamCommitList {
@@ -258,7 +258,7 @@ interface ApplicabilityResult {
 
 ### `POST /api/upstream/patch`
 
-Body: `{ upstream, user, sessionId, commit }`. The commit's files and hunks against its first parent (`CommitPatch`: `files[]` with `oldPath`, `newPath`, `status`, `binary`, `hunks`; `truncated`).
+Body: `{ upstream, user, sessionId, commit }`. The commit's own metadata as `details` (`CommitDetails`: `CommitInfo` plus `parents`, first parent first), and its files and hunks against its first parent (`CommitPatch`: `files[]` with `oldPath`, `newPath`, `status`, `binary`, `hunks`; `truncated`).
 
 ## Other
 

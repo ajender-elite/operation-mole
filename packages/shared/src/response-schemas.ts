@@ -219,6 +219,7 @@ export const ApplicabilityResultSchema = z.object({
 /** `POST /api/upstream/patch`. */
 export const CommitPatchSchema = z.object({
   commit: z.string(),
+  details: CommitInfoSchema.extend({ parents: z.array(z.string()) }),
   baseParent: z.string().exactOptional(),
   files: z.array(
     z.object({

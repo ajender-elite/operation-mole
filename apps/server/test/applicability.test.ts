@@ -157,6 +157,34 @@ describe('the upstream commit window', () => {
     expect(mainline.commits.map((x) => x.sha)).not.toContain(c['T1']);
   });
 
+  it('lists only the commits that touched the given paths, when given any', async () => {
+    // U1 adds feature.txt and U5 edits it; U3 only touches util.txt.
+    const touching = await om.commits({
+      upstream: up(),
+      downstream: down(),
+      limit: 200,
+      hideReachable: true,
+      paths: ['feature.txt'],
+    });
+    const shas = touching.commits.map((x) => x.sha);
+    expect(shas).toContain(c['U1']);
+    expect(shas).toContain(c['U5']);
+    expect(shas).not.toContain(c['U3']);
+    expect(touching.hasMore).toBe(false);
+
+    // Several paths: the commits that touched any of them (U3 touches util.txt).
+    const either = await om.commits({
+      upstream: up(),
+      downstream: down(),
+      limit: 200,
+      hideReachable: true,
+      paths: ['feature.txt', 'util.txt'],
+    });
+    expect(either.commits.map((x) => x.sha)).toEqual(
+      expect.arrayContaining([c['U1'], c['U3'], c['U5']]),
+    );
+  });
+
   it('filters by commit date', async () => {
     // The scenario's commits are dated 2026; the pinned seed's are from 2011 and 2012.
     const list = await om.commits({
@@ -324,6 +352,16 @@ describe('patches', () => {
     expect(merge.files).toEqual([
       expect.objectContaining({ newPath: 'merged.txt', status: 'added', binary: false }),
     ]);
+  });
+
+  it('returns the commit itself, with its git metadata and parents', async () => {
+    const merge = await om.patch(up(), c['M'] ?? '');
+    expect(merge.details).toMatchObject({
+      sha: c['M'],
+      subject: 'M: merge topic',
+      parents: [c['U9'], c['T1']],
+    });
+    expect(merge.details.commitDate).toMatch(/^2026-/);
   });
 });
 

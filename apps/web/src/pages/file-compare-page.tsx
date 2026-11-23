@@ -12,7 +12,11 @@ import {
 import { useState, type JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { AttributionPanel, type AttributionScope } from '../components/attribution-panel.tsx';
-import { SnapshotDiffView, type LineRef } from '../components/snapshot-diff-view.tsx';
+import {
+  SnapshotDiffView,
+  type DiffLayout,
+  type LineRef,
+} from '../components/snapshot-diff-view.tsx';
 import {
   commitFootprint,
   differingFiles,
@@ -25,7 +29,7 @@ import { folderCompareQuery } from '../lib/folder-compare.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
 import { fileDiffQuery, useAnalyzedDiffs, type SnapshotPair } from '../lib/snapshot-diff.ts';
 import { sourceFromParams, sourceLabel } from '../lib/sources.ts';
-import { fileUrl, foldersUrl } from '../lib/urls.ts';
+import { commitsUrl, commitUrl, fileUrl, foldersUrl } from '../lib/urls.ts';
 import { useWorkspace } from '../lib/workspace-context.ts';
 
 const contentNotice = {
@@ -109,6 +113,8 @@ function FileCompare({ context }: { context: FileContext }) {
 
   const isExplaining = params.get('explain') === '1';
   const isFullFile = params.get('full') === '1';
+  // Side by side unless the user chose inline; the choice lives in the URL with the rest of the view.
+  const layout: DiffLayout = params.get('view') === 'inline' ? 'inline' : 'side';
   const hunkParam = params.get('hunk');
   const focusedHunk = hunkParam !== null && /^\d+$/.test(hunkParam) ? Number(hunkParam) : undefined;
   const commitSha = value(params, 'commit');
@@ -236,6 +242,28 @@ function FileCompare({ context }: { context: FileContext }) {
           >
             <Rows3 className="size-3.5" aria-hidden /> Whole file
           </button>
+          {(['left', 'right'] as const).map((side) => (
+            <button
+              key={side}
+              type="button"
+              title={`Commits that ${side === 'left' ? 'Base' : 'Target'} has and the other side does not, in a new tab`}
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-xs hover:bg-hover"
+              onClick={() => {
+                workspace.open(
+                  commitsUrl(
+                    user,
+                    sessionId,
+                    { left, right, leftCommit, rightCommit, target },
+                    side,
+                    { hunk: hunkParam ?? undefined },
+                  ),
+                );
+              }}
+            >
+              <GitCommitHorizontal className="size-3.5" aria-hidden />
+              {side === 'left' ? 'Base' : 'Target'}: diverging commits
+            </button>
+          ))}
           {diff?.content === 'text' && (
             <button
               type="button"
@@ -280,12 +308,19 @@ function FileCompare({ context }: { context: FileContext }) {
               focusedHunk={focusedHunk}
               focusedLine={focusedLine}
               highlightCommit={commitSha}
+              layout={layout}
+              onLayoutChange={(next) => {
+                setSearch({ view: next === 'inline' ? 'inline' : undefined }, true);
+              }}
               onFocusHunk={(h) => {
                 if (h !== focusedHunk) setSearch({ hunk: String(h) }, true);
               }}
               onFocusLine={setFocusedLine}
-              onSelectCommit={(sha) => {
-                setSearch({ commit: sha });
+              onOpenCommit={(sha, side) => {
+                // The commit lives in the repository of the side whose history it is in.
+                workspace.open(
+                  commitUrl(user, sessionId, side === 'left' ? left.repoId : right.repoId, sha),
+                );
               }}
             />
           ) : (
@@ -307,6 +342,13 @@ function FileCompare({ context }: { context: FileContext }) {
             analyzedFiles={analyzed.length}
             onSelectCommit={(sha) => {
               setSearch({ commit: sha });
+            }}
+            onOpenCommit={(sha) => {
+              // The commit is opened from the repository of the side whose history holds it.
+              const found = explained.data?.commits.find((c) => c.sha === sha);
+              const repoId =
+                found?.inRight === true && found.inLeft !== true ? right.repoId : left.repoId;
+              workspace.open(commitUrl(user, sessionId, repoId, sha));
             }}
             onOpenFile={(key, hunk) => {
               const other = analyzed.find((e) => e.key === key)?.diff;
@@ -344,6 +386,7 @@ function Explanation({
   footprint,
   analyzedFiles,
   onSelectCommit,
+  onOpenCommit,
   onOpenFile,
   onClose,
 }: {
@@ -357,6 +400,7 @@ function Explanation({
   analyzedFiles: number;
   onSelectCommit: (sha: string | undefined) => void;
   onOpenFile: (key: string, hunk: number | undefined) => void;
+  onOpenCommit: (sha: string) => void;
   onClose: () => void;
 }) {
   let scope: AttributionScope = { kind: 'File', label: target.key };
@@ -396,6 +440,20 @@ function Explanation({
       analyzedFiles={analyzedFiles}
       onSelectCommit={onSelectCommit}
       onOpenFile={onOpenFile}
+      commitActions={
+        selected === undefined ? undefined : (
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-ink hover:bg-hover"
+            onClick={() => {
+              onOpenCommit(selected.sha);
+            }}
+          >
+            <GitCommitHorizontal className="size-4" aria-hidden />
+            Open commit in a new tab
+          </button>
+        )
+      }
       onClose={onClose}
     />
   );

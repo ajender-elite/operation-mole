@@ -1,6 +1,6 @@
 import type { GitSource, RepoInfo } from '@om/shared';
 import clsx from 'clsx';
-import { GitBranch, History, LoaderCircle, Plus, RefreshCw } from 'lucide-react';
+import { GitBranch, LoaderCircle, Plus, RefreshCw } from 'lucide-react';
 import { useId, useState, type JSX, type SubmitEvent } from 'react';
 import { CompareForm } from '../components/compare-form.tsx';
 import { formatRelative } from '../lib/format.ts';
@@ -32,7 +32,7 @@ export function SessionOverviewPage(): JSX.Element {
     );
   }
 
-  const { session: info, repos, recent } = session.data;
+  const { session: info, repos } = session.data;
 
   if (repos.length === 0) {
     return (
@@ -49,10 +49,6 @@ export function SessionOverviewPage(): JSX.Element {
     );
   }
 
-  // Only git comparisons can be reopened: OM compares git repositories only.
-  const gitRecent = recent.flatMap((c) =>
-    c.left.type === 'git' && c.right.type === 'git' ? [{ ...c, left: c.left, right: c.right }] : [],
-  );
   const openFolders = (l: GitSource, r: GitSource) => {
     workspace.open(foldersUrl(user, sessionId, l, r));
   };
@@ -78,40 +74,6 @@ export function SessionOverviewPage(): JSX.Element {
             }}
           />
         </section>
-
-        {gitRecent.length > 0 && (
-          <section className="space-y-2">
-            <h2 className="flex items-center gap-1.5 text-sm font-semibold">
-              <History className="size-4 text-muted" aria-hidden />
-              Recent comparisons
-            </h2>
-            <ul
-              aria-label="Recent comparisons"
-              className={clsx(card, 'divide-y divide-line overflow-hidden')}
-            >
-              {gitRecent.map((c) => (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-hover"
-                    onClick={() => {
-                      openFolders(c.left, c.right);
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate font-mono">
-                      <span className="text-left">{c.leftLabel}</span>
-                      <span className="px-2 text-muted">↔</span>
-                      <span className="text-right">{c.rightLabel}</span>
-                    </span>
-                    <span className="shrink-0 text-xs text-muted">
-                      {formatRelative(c.comparedAt)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
 
         <RepoSection user={user} sessionId={sessionId} repos={repos} />
       </div>

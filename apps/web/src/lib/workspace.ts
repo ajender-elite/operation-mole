@@ -7,12 +7,14 @@ export type WorkspaceTab = {
 };
 
 /** What a tab shows. */
-export type TabKind = 'home' | 'folders' | 'file' | 'upstream';
+export type TabKind = 'home' | 'folders' | 'file' | 'upstream' | 'commit' | 'commits';
 
 const KINDS: ReadonlyMap<string, TabKind> = new Map([
   ['folders', 'folders'],
   ['file', 'file'],
   ['upstream', 'upstream'],
+  ['commit', 'commit'],
+  ['commits', 'commits'],
 ]);
 
 function split(url: string): { pathname: string; params: URLSearchParams } {
@@ -33,6 +35,14 @@ export function tabKind(url: string, base: string): TabKind | undefined {
 
 const SOURCES = ['leftRepo', 'leftBranch', 'rightRepo', 'rightBranch'];
 const FILE = ['leftRepo', 'rightRepo', 'leftCommit', 'rightCommit', 'leftPath', 'rightPath'];
+/** The parameters that make a tab the same context, per kind (the rest is where the user is in it). */
+const IDENTITY: Record<Exclude<TabKind, 'home'>, string[]> = {
+  folders: SOURCES,
+  upstream: SOURCES,
+  file: FILE,
+  commit: ['repo', 'commit'],
+  commits: [...FILE, 'side'],
+};
 
 function key(params: URLSearchParams, names: string[]): string | undefined {
   const values = names.map((n) => params.get(n) ?? '');
@@ -50,7 +60,7 @@ export function tabIdentity(url: string, base: string): string | undefined {
   if (kind === undefined) return undefined;
   if (kind === 'home') return 'home';
   const { params } = split(url);
-  return `${kind}:${key(params, kind === 'file' ? FILE : SOURCES) ?? 'new'}`;
+  return `${kind}:${key(params, IDENTITY[kind]) ?? 'new'}`;
 }
 
 /** A tab to drop: closed, or replaced by the active one (which then takes its place). */

@@ -1,5 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -58,10 +69,40 @@ export const NGINX_1_28: NginxBranch = {
 };
 
 /**
- * A bare repository at `dir` with nginx's `stable-1.26` and `stable-1.28` branches from
+ * A bare repository with nginx's `stable-1.26` and `stable-1.28` branches from
  * {@link NGINX_BUNDLE}, serving partial clones (as GitHub does). Returns its `file://` URL.
+ *
+ * It is built once per bundle content, under the OS temp folder, and reused by later runs.
+ * Tests only read it (OM clones from it), so sharing it is safe; each test still gets its
+ * own OM data folder. Changing the bundle changes the key, so a stale copy is never reused.
  */
-export function nginxRepo(dir: string): string {
+export function nginxRepo(): string {
+  const key = createHash('sha256').update(readFileSync(NGINX_BUNDLE)).digest('hex').slice(0, 16);
+  const dir = path.join(tmpdir(), 'om-test-fixtures', `nginx-${key}.git`);
+  if (!existsSync(dir)) {
+    // Build in a private folder, then rename: parallel test files never see a half-built copy.
+    const staging = `${dir}.${process.pid}-${randomUUID()}`;
+    buildNginxRepo(staging);
+    try {
+      renameSync(staging, dir);
+    } catch (error) {
+      rmSync(staging, { recursive: true, force: true, maxRetries: 5 });
+      // Another test file may have finished first; anything else is a real failure.
+      if (!existsSync(dir)) throw error;
+    }
+  }
+  const git = (...args: string[]) =>
+    execFileSync('git', args, { cwd: dir, env: isolatedEnv(), encoding: 'utf8' }).trim();
+  for (const { branch, commit, tree } of [NGINX_1_26, NGINX_1_28]) {
+    if (git('rev-parse', branch) !== commit || git('rev-parse', `${branch}^{tree}`) !== tree) {
+      throw new Error(`nginx bundle does not match ${branch}`);
+    }
+  }
+  return pathToFileURL(dir).href;
+}
+
+/** A bare repository holding the bundle's branches, serving partial clones. */
+function buildNginxRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
   const git = (...args: string[]) =>
     execFileSync('git', args, { cwd: dir, env: isolatedEnv(), encoding: 'utf8' }).trim();
@@ -70,12 +111,6 @@ export function nginxRepo(dir: string): string {
   git('config', 'uploadpack.allowAnySHA1InWant', 'true');
   git('fetch', '-q', NGINX_BUNDLE, 'refs/heads/*:refs/heads/*');
   git('symbolic-ref', 'HEAD', `refs/heads/${NGINX_1_28.branch}`);
-  for (const { branch, commit, tree } of [NGINX_1_26, NGINX_1_28]) {
-    if (git('rev-parse', branch) !== commit || git('rev-parse', `${branch}^{tree}`) !== tree) {
-      throw new Error(`nginx bundle does not match ${branch}`);
-    }
-  }
-  return pathToFileURL(dir).href;
 }
 
 /** A fixed identity: tests compare names, so nothing comes from the machine. */

@@ -1,8 +1,17 @@
 import type { RepoInfo } from '@om/shared';
 import clsx from 'clsx';
-import { FileDiff, FolderTree, GitPullRequestArrow, LayoutDashboard, X } from 'lucide-react';
+import {
+  FileDiff,
+  FolderTree,
+  GitCommitHorizontal,
+  GitPullRequestArrow,
+  LayoutDashboard,
+  ListTree,
+  X,
+} from 'lucide-react';
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import { Route, Routes, useLocation, useNavigate } from 'react-router';
+import { shortSha } from '../lib/attribution.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
 import { sourceFromParams, sourceLabel } from '../lib/sources.ts';
 import { sessionPath } from '../lib/urls.ts';
@@ -17,6 +26,8 @@ import {
   type TabRemoval,
   type WorkspaceTab,
 } from '../lib/workspace.ts';
+import { CommitListPage } from '../pages/commits-page.tsx';
+import { CommitPage } from '../pages/commit-page.tsx';
 import { DirectoryComparePage } from '../pages/directory-compare-page.tsx';
 import { FileComparePage } from '../pages/file-compare-page.tsx';
 import { NotFoundPage } from '../pages/not-found-page.tsx';
@@ -120,6 +131,8 @@ function SessionTabs({ user, sessionId }: { user: string; sessionId: string }) {
                 <Route path="folders" element={<DirectoryComparePage />} />
                 <Route path="file" element={<FileComparePage />} />
                 <Route path="upstream" element={<UpstreamPage />} />
+                <Route path="commit" element={<CommitPage />} />
+                <Route path="commits" element={<CommitListPage />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
             </TabPanel>
@@ -164,6 +177,8 @@ const kindIcon: Record<TabKind, typeof FolderTree> = {
   folders: FolderTree,
   file: FileDiff,
   upstream: GitPullRequestArrow,
+  commit: GitCommitHorizontal,
+  commits: ListTree,
 };
 
 /** A tab's name, from its URL and the session's repos (so it follows renames and fetches). */
@@ -186,6 +201,10 @@ function tabTitle(tab: WorkspaceTab, base: string, repos: RepoInfo[]): string {
       return left && right
         ? `Upstream ${sourceLabel(left, repos)} → ${sourceLabel(right, repos)}`
         : 'Upstream';
+    case 'commit':
+      return `Commit ${shortSha(params.get('commit') ?? '')}`;
+    case 'commits':
+      return params.get('side') === 'right' ? 'Target commits' : 'Base commits';
     case 'home':
     case undefined:
       return 'Overview';

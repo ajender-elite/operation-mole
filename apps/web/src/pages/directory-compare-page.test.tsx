@@ -131,6 +131,9 @@ describe('DirectoryComparePage', () => {
     expect(await row('new.txt')).toHaveAttribute('data-status', 'only-right');
     expect(await row('same.txt')).toHaveAttribute('data-status', 'identical');
 
+    // Statistics are hidden until asked for.
+    expect(screen.queryByRole('group', { name: /summary/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Show current directory statistics' }));
     const summary = screen.getByRole('group', { name: /summary/i });
     expect(within(summary).getByRole('button', { name: /identical.*3/i })).toBeInTheDocument();
     expect(within(summary).getByRole('button', { name: /only in base.*2/i })).toBeInTheDocument();
@@ -138,15 +141,12 @@ describe('DirectoryComparePage', () => {
     expect(within(summary).getByRole('button', { name: /different.*1/i })).toBeInTheDocument();
   });
 
-  it('keeps the sources out of the way once compared, editable on request', async () => {
-    const user = userEvent.setup();
+  it('offers no commit pickers once compared: a new comparison is opened from the overview', async () => {
     renderApp(loaded);
     expect(await row('docs')).toBeInTheDocument();
     expect(screen.queryByLabelText('Base repository')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Change' }));
-    expect(screen.getByLabelText('Base repository')).toHaveValue('r1');
-    expect(screen.getByLabelText('Base branch')).toHaveValue('main');
-    expect(screen.getByLabelText('Target branch')).toHaveValue('dev');
+    expect(screen.queryByLabelText('Target branch')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
   });
 
   it('shows the entry only on its own side for one-sided entries', async () => {

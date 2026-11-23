@@ -4,17 +4,17 @@ Code: `apps/web/src`. Built with React 19, Vite 8, Tailwind CSS v4, TanStack Que
 
 ## Routes
 
-| Path                             | Page                   | Purpose                                                                                                 |
-| -------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------- |
-| `/`                              | `WelcomePage`          | Enter a username (skipped if one is remembered)                                                         |
-| `/u/:user`                       | `SessionsPage`         | List, create and delete sessions; switch user                                                           |
-| `/u/:user/s/:sessionId`          | `SessionOverviewPage`  | Add a repo (all it shows when there is none); then compare, recent comparisons, repos with Fetch latest |
-| `/u/:user/s/:sessionId/folders`  | `DirectoryComparePage` | Folder Compare: what differs, as a tree; "Explain difference" on request                                |
-| `/u/:user/s/:sessionId/file`     | `FileComparePage`      | File Compare: one file at the commits its Folder Compare resolved; "Explain difference" on request      |
-| `/u/:user/s/:sessionId/files`    | redirect to `folders`  | Files was folded into Folders (query kept)                                                              |
-| `/u/:user/s/:sessionId/upstream` | `UpstreamPage`         | Upstream commit window and applicability to downstream                                                  |
-| `/u/:user/s/:sessionId/lab`      | redirect to `upstream` | The placeholder Upstream replaced (query kept)                                                          |
-| `/directories`, `/files`         | redirect to `/`        | Links from before sessions                                                                              |
+| Path                             | Page                   | Purpose                                                                                            |
+| -------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------- |
+| `/`                              | `WelcomePage`          | Enter a username (skipped if one is remembered)                                                    |
+| `/u/:user`                       | `SessionsPage`         | List, create and delete sessions; switch user                                                      |
+| `/u/:user/s/:sessionId`          | `SessionOverviewPage`  | Add a repo (all it shows when there is none); then compare, repos with Fetch latest                |
+| `/u/:user/s/:sessionId/folders`  | `DirectoryComparePage` | Folder Compare: what differs, as a tree; "Explain difference" on request                           |
+| `/u/:user/s/:sessionId/file`     | `FileComparePage`      | File Compare: one file at the commits its Folder Compare resolved; "Explain difference" on request |
+| `/u/:user/s/:sessionId/files`    | redirect to `folders`  | Files was folded into Folders (query kept)                                                         |
+| `/u/:user/s/:sessionId/upstream` | `UpstreamPage`         | Upstream commit window and applicability to downstream                                             |
+| `/u/:user/s/:sessionId/lab`      | redirect to `upstream` | The placeholder Upstream replaced (query kept)                                                     |
+| `/directories`, `/files`         | redirect to `/`        | Links from before sessions                                                                         |
 
 `AppShell` is the layout around every page. It shows the OM logo, the `user › session` breadcrumb, the session navigation (inside a session only) and the theme toggle. It gets the user and session from `useMatch`.
 
@@ -34,11 +34,11 @@ Everything needed to rebuild a view is in the URL, so reloads, bookmarks and Bac
 | Selected commit | `commit=<sha>` (Folders: details + footprint; Upstream: the commit in focus)    |
 | Commit window   | `limit`, `since=YYYY-MM-DD`, `hide=1`, `fp=1`, `status=<filter>` (Upstream)     |
 
-`lib/sources.ts` converts between the URL and `GitSource` objects (`sourceFromParams`, `sourcesSearch`); `lib/urls.ts` builds tab URLs (`foldersUrl`, `fileUrl`, `upstreamUrl`).
+`lib/sources.ts` converts between the URL and `GitSource` objects (`sourceFromParams`, `sourcesSearch`); `lib/urls.ts` builds tab URLs (`foldersUrl`, `fileUrl`, `upstreamUrl`, `commitUrl`, `commitsUrl`).
 
 ### Tabs
 
-`SessionWorkspace` (route `u/:user/s/:sessionId/*`) keeps the session's working contexts as tabs. Each tab is `{ id, url }` (`lib/workspace.ts`): the active tab's URL is the browser's, the others remember where the user left them. A tab is mounted on first visit and then stays mounted, rendered with `<Routes location={tab.url}>`, and inactive tabs are hidden with `visibility: hidden` and `inert` (not unmounted, not `display: none`), so expanded folders, filters, focus and scroll positions survive switching. The tab id is the comparison context: the two sources for Folder Compare and Upstream, the pinned commits and paths for File Compare (`tabIdentity`). `useWorkspace().open(url)` focuses the equivalent open tab as it was left, or opens a new one (`isExact` shows the given URL anyway; `isReplacing` puts the new context in the current tab's place). Tabs are kept per session in `sessionStorage` (`om-tabs:<user>:<session>`), so a reload restores them. The strip is shown only when more than the Overview is open. Upstream and Folders use the same `left*`/`right*` parameters, so the snapshots carry over between them.
+`SessionWorkspace` (route `u/:user/s/:sessionId/*`) keeps the session's working contexts as tabs. Each tab is `{ id, url }` (`lib/workspace.ts`): the active tab's URL is the browser's, the others remember where the user left them. A tab is mounted on first visit and then stays mounted, rendered with `<Routes location={tab.url}>`, and inactive tabs are hidden with `visibility: hidden` and `inert` (not unmounted, not `display: none`), so expanded folders, filters, focus and scroll positions survive switching. The tab id is the comparison context: the two sources for Folder Compare and Upstream, the pinned commits and paths for File Compare, the repository and SHA for a Commit tab (`kind: commit`), and the pinned File Compare plus a side for a Commit List (`kind: commits`) (`tabIdentity`, `IDENTITY` in `lib/workspace.ts`). `useWorkspace().open(url)` focuses the equivalent open tab as it was left, or opens a new one (`isExact` shows the given URL anyway; `isReplacing` puts the new context in the current tab's place). Tabs are kept per session in `sessionStorage` (`om-tabs:<user>:<session>`), so a reload restores them. The strip is shown only when more than the Overview is open. Upstream and Folders use the same `left*`/`right*` parameters, so the snapshots carry over between them.
 
 The remembered username (`om-user`) and theme (`om-theme`) are in `localStorage`.
 
@@ -85,3 +85,10 @@ Tailwind v4 with design tokens in `src/index.css` (`@theme`):
 - **Colors:** `--color-left*` (green), `--color-right*` (blue), `--color-modified*` (orange), `--color-error*` (red), plus surface, line, muted and accent tokens.
 - **Dark mode:** tokens are redefined under `:root[data-theme='dark']`, and under `prefers-color-scheme: dark` unless light was chosen.
 - **`dark:` variant:** a custom variant that covers both of those cases.
+
+### File Compare, Commit and Commit List
+
+- **Layout.** File Compare opens **side by side**: Base (blue) on the left, Target (green) on the right, aligned row by row (`lib/diff-rows.ts`, `alignRows`). **Inline** is the single list with `+`/`−` lines. The choice is `view=inline` in the URL, so it survives a reload and a tab switch. The focused hunk and line persist across the switch.
+- **Commit markers.** A changed line's commit marker opens that commit in its own **Commit tab** (`commit` kind). The commit's repository is the repository of the side whose history holds it (Base for removed lines, Target for added). The File Compare tab is not replaced.
+- **Diverging commits.** "Base: diverging commits" and "Target: diverging commits" open a **Commit List** tab (`commits` kind, `side=left|right`). It has three separate groups, composed in the frontend from generic backend answers: _accounting for the changes shown_ (git blame attribution of this side's lines, or of the focused hunk), _touching this file_ (`/api/upstream/commits` with `paths`), and _all diverging commits_ (`/api/upstream/commits` with `hideReachable`). These are different questions; the page keeps them apart.
+- **Back and forth.** Each new tab is opened in the background; "File compare" in a Commit List returns to the File Compare tab as it was left.
