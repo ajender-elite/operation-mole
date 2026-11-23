@@ -262,6 +262,4 @@ Body: `{ upstream, user, sessionId, commit }`. The commit's files and hunks agai
 
 ## Other
 
-### `GET /api/defaults`
-
-Returns `{ left?: string; right?: string }`: the folders a new comparison opens with. These are `examples/left` and `examples/right` unless `OM_LEFT` or `OM_RIGHT` is set.
+OM has no default folders: `GET /api/defaults` and `OM_LEFT`/`OM_RIGHT` were removed with the example data (decision 25).

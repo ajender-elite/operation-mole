@@ -75,7 +75,7 @@ beforeAll(async () => {
   await app.ready();
   om = await new OmClient(app, 'snap').start();
   repo = await om.addRepo(scenario.url);
-});
+}, 120_000); // builds a full history with many git processes; the 30s default is too tight under load
 afterAll(async () => {
   await app.close();
   await rm(base, { recursive: true, force: true });

@@ -51,8 +51,6 @@ export default defineConfig(
     // Built releases (`pnpm release`): copies of the source.
     'releases/',
     '**/*.generated.ts',
-    // Byte-exact sample data, never linted or formatted (see examples/README.md).
-    'examples/',
     '.data/',
   ]),
 

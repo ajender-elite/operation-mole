@@ -60,10 +60,7 @@ Install pnpm once with `npm install -g pnpm@12.21.0`. Node 26 no longer bundles 
 
 OM uses Node's built-in SQLite (`node:sqlite`), so it needs no database server or extra installs.
 
-It runs on **Linux, macOS and Windows**. Git uses the machine's own git config, credential helpers and SSH keys. On Windows, two optional settings make the symlink examples real symlinks (otherwise git checks them out as small text files and the symlink tests are skipped):
-
-1. Turn on **Developer Mode** (Settings → System → For developers), so symlinks can be created without admin rights.
-2. Clone with `git clone -c core.symlinks=true …`. In an existing clone, run `git config core.symlinks true`, delete the `examples` folder, then run `git checkout -- examples` and `pnpm install` (which recreates the empty example folders).
+It runs on **Linux, macOS and Windows**. Git uses the machine's own git config, credential helpers and SSH keys. OM's own git commands set `core.longpaths=true`, so repositories with paths longer than 260 characters (such as nginx) check out on Windows too. On Windows, the symlink tests are skipped unless symlinks can be created without admin rights: turn on **Developer Mode** (Settings → System → For developers) to run them.
 
 ### Install
 
@@ -128,7 +125,7 @@ pnpm check
 
 This runs type checks, lint (zero warnings allowed), a format check and all tests. Git tests create real temporary repos, so git must be installed. `pnpm test:coverage` also enforces 80% line and branch coverage. Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The server reads a few optional environment variables (port, host, default folders, data folder). They're listed in [.env.example](.env.example).
+The server reads a few optional environment variables (port, host, data folder). They're listed in [.env.example](.env.example).
 
 ## Using OM
 
@@ -165,12 +162,11 @@ How clones work:
 
 ## Configuration
 
-| Variable               | Default                            | Purpose                                                                                                           |
-| ---------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `OM_DATA_DIR`          | `.data/` in the project            | Database and cloned repos. Excluded from git.                                                                     |
-| `OM_LEFT` / `OM_RIGHT` | `examples/left` / `examples/right` | API defaults (`GET /api/defaults`); the web app no longer opens them, since it compares git repositories only     |
-| `API_PORT`             | `5181`                             | API port                                                                                                          |
-| `HOST`                 | `127.0.0.1`                        | API bind address. The API reads any local path and runs git, so keep it on loopback unless you trust the network. |
+| Variable      | Default                 | Purpose                                                                                                           |
+| ------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `OM_DATA_DIR` | `.data/` in the project | Database and cloned repos. Excluded from git.                                                                     |
+| `API_PORT`    | `5181`                  | API port                                                                                                          |
+| `HOST`        | `127.0.0.1`             | API bind address. The API reads any local path and runs git, so keep it on loopback unless you trust the network. |
 
 ### Where data lives
 
@@ -202,7 +198,6 @@ apps/server        Fastify API. Node runs the TypeScript directly, so there's no
   src/store          SQLite store for users, sessions, repos and recent comparisons
 apps/web           React 19, Vite, Tailwind CSS v4, TanStack Query, React Router, Monaco
 packages/shared    API types and zod schemas used by both apps
-examples/          sample folders covering every comparison case (see examples/README.md)
 ```
 
 Development is test-first:

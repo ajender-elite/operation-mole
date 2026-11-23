@@ -2,7 +2,4 @@ dist/
 coverage/
 releases/
 pnpm-lock.yaml
-# Byte-exact sample data (CRLF, trailing spaces): never format it.
-examples/left
-examples/right
 .data

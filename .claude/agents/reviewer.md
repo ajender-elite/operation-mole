@@ -19,7 +19,7 @@ You review changes in the OM (Operation Mole) repo. Read `CLAUDE.md` first; it i
 - Every behavior change has a test that would fail without it.
 - Server tests use real temp folders or git repos (`test/fixtures.ts`, `test/git-fixtures.ts`), not mocks of `fs` or git.
 - Web tests go through `renderApp(url)` and handle every request with MSW handlers.
-- A change to example data comes with an update to `apps/server/test/examples.test.ts` and `examples/README.md`.
+- A change to the nginx fixture (`test/seed/nginx.bundle`) updates the constants in `test/scenario.ts` and the counts in `test/nginx-branches.test.ts`, and passes `pnpm test:remote`.
 
 **TypeScript and style**
 

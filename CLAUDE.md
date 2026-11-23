@@ -4,7 +4,7 @@ Guidance for Claude (and other coding agents) working in this repo. Read this fi
 
 ## What this is
 
-**OM (Operation Mole)** is a local web app for comparing a **Base** and a **Target**: two folders, or two git branches cloned into a per-user **session**. It shows what is identical, different, or present on only one side, and has a Monaco file diff.
+**OM (Operation Mole)** is a local web app for comparing a **Base** and a **Target**: two git branches cloned into a per-user **session** (the API also accepts two absolute folder paths; the UI offers only git). It shows what is identical, different, or present on only one side, and has a Monaco file diff.
 
 - Users identify by **username only** (no passwords). Sessions belong to a user. Each session has its own cloned repos and a list of recent comparisons.
 - Experiences, each in its own **tab** inside the session (`components/session-workspace.tsx`): **Overview** (add a repo first; then compare, recent, repos), **Folder Compare** (what differs), **File Compare** (one file at pinned commits), **Upstream** (commit applicability). Show only what the current state can use; attribution ("Explain difference") is computed only on request, scoped to what the user is looking at. The UI compares git repositories only: each side is a repo URL (sides may use different remotes) plus an explicitly chosen branch. The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
@@ -17,7 +17,7 @@ pnpm dev                   # API :5181 (node --watch) + web :5180 (Vite). Open h
 pnpm check                 # typecheck + eslint (0 warnings) + prettier --check + all tests. Must pass.
 pnpm test                  # all Vitest projects (shared, server, web)
 pnpm test:coverage         # tests + 80% line/branch thresholds
-pnpm test:remote           # network: checks the pinned public seed against GitHub (not part of check)
+pnpm test:remote           # network: checks the pinned seeds (Hello-World, nginx) against GitHub (not part of check)
 pnpm vitest run --project server test/git-service.test.ts   # one file
 pnpm build && pnpm start   # production: one server on :5181
 pnpm release               # releases/om-<version>/ + .tar.gz: runs anywhere with Node 26+ and git, no install or build
@@ -40,13 +40,12 @@ apps/server       Fastify. Node runs .ts directly (type stripping). No build ste
   src/snapshot/         snapshot-analyzer.ts (file diff + blame attribution, renames, ancestry), parsers, object views
   src/upstream/         upstream-analyzer.ts (commit window, merge-tree applicability, patches)
   src/store/store.ts    node:sqlite: users, sessions, repos, recent comparisons
-  test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts; scenario.ts builds deterministic histories on the pinned seed in test/seed/).
+  test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts; scenario.ts: deterministic histories on the pinned Hello-World seed, and nginxRepo() with nginx stable-1.26/1.28; both bundles in test/seed/).
 apps/web          React 19 + Vite + Tailwind v4 + TanStack Query + React Router + Monaco
   src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/file|/upstream] inside SessionWorkspace tabs (/lab → upstream, /files → folders)
   src/components/, src/pages/   kebab-case files (app-shell.tsx), PascalCase components (AppShell)
   src/lib/              api client (parses every response with the shared schemas), sources (URL⇄Source), session hooks, tree, theme, format
   src/test/             MSW server + handlers, renderApp(url) helper
-examples/         left/ (base) and right/ (target): sample data covering every case. Tested by examples.test.ts.
 docs/             architecture, API, data model, git, comparison rules, frontend, testing, decisions
 ```
 
@@ -55,7 +54,7 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 - **Write tests first.** Write or extend a test, run it and watch it fail for the right reason, then implement. Every behavior change comes with a test.
   - Server: `apps/server/test/*.test.ts`
   - Web: `*.test.tsx` next to the component or page, using `renderApp(url)` and MSW handlers
-  - Example data: `examples.test.ts`
+  - Real-world comparison: `nginx-branches.test.ts` (nginx `stable-1.26` → `stable-1.28`)
 - **Finish with `pnpm check` passing.** For UI changes, also look at it in the browser preview.
 - **TypeScript is strict** (every flag in CONTRIBUTING.md §4, including `exactOptionalPropertyTypes` and `noPropertyAccessFromIndexSignature`), with `erasableSyntaxOnly`. That means:
   - no `enum`, no constructor parameter properties, no namespaces
@@ -103,10 +102,8 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 - **`API_PORT`, not `PORT`:** the preview runner sets `PORT=5180`, so the API reads `API_PORT`. Don't switch it back.
 - **Never kill node by name** (`pkill -f "node src/index.ts"`, `taskkill /IM node.exe`): it also kills the dev API, which runs that file under `node --watch`. Stop only the PID you started.
 - **`pnpm start` passes `--production`**, not `NODE_ENV=production` (that syntax breaks on Windows).
-- **`examples/left` and `examples/right` must stay byte-exact.** They're excluded from Prettier and ESLint; never format them.
-  - Some cases depend on exact bytes: CRLF, trailing spaces, zero-byte files, symlinks, `résumé.txt`.
-  - Git doesn't keep the empty folders `empty-both/` and `empty-in-base/`. `pnpm install` recreates them (`postinstall` → `scripts/ensure-example-dirs.ts`); without them `examples.test.ts` fails.
-  - `.gitattributes` marks the example data `-text`, so git never changes its line endings.
+- **The nginx fixture** (`test/seed/nginx.bundle`) holds nginx's exact trees at two pinned release commits, as two fixture commits (`stable-1.28` a child of `stable-1.26`). Commit SHAs are the fixture's own; tree SHAs match GitHub's, which `test:remote` checks. Rebuild it only as described in docs/testing.md, then update the constants in `scenario.ts` and the counts in `nginx-branches.test.ts`.
+- **Long paths on Windows:** git refuses paths over 260 characters unless `core.longpaths` is on (nginx has them), so `GitService` passes `core.longpaths=true` to its simple-git commands. Keep it.
 - **Monaco:**
   - It's bundled locally; the worker import is `monaco-editor/editor/editor.worker?worker` (0.57 exports map).
   - Keep `useInlineViewWhenSpaceIsLimited: false`, or narrow windows silently switch to inline.
@@ -122,4 +119,3 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 
 - [README.md](README.md): setup, run, usage
 - [docs/](docs/README.md): design and reference docs (API, data model, comparison rules, …)
-- [examples/README.md](examples/README.md): if you add or change an example case (and update `examples.test.ts`)

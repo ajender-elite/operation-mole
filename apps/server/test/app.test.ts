@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { DefaultsResponse, DirectoryCompareResult, FileCompareResult } from '@om/shared';
+import type { DirectoryCompareResult, FileCompareResult } from '@om/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.ts';
@@ -130,20 +130,5 @@ describe('GET /api/compare/files', () => {
 
   it('returns 400 when the path is a directory', async () => {
     expect((await get({ left: p('left') })).statusCode).toBe(400);
-  });
-});
-
-describe('GET /api/defaults', () => {
-  it('returns the configured default folders', async () => {
-    const custom = buildApp({ defaultLeft: '/ex/left', defaultRight: '/ex/right' });
-    const res = await custom.inject({ method: 'GET', url: '/api/defaults' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json<DefaultsResponse>()).toEqual({ left: '/ex/left', right: '/ex/right' });
-    await custom.close();
-  });
-
-  it('returns an empty object when no defaults are configured', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/defaults' });
-    expect(res.json<DefaultsResponse>()).toEqual({});
   });
 });

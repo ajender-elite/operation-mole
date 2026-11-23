@@ -13,7 +13,6 @@ import {
   SnapshotFileDiffRequestSchema,
   UpstreamCommitsRequestSchema,
   UsernameSchema,
-  type DefaultsResponse,
   type FileCompareResult,
   type SessionDetail,
   type UpstreamCommitList,
@@ -38,9 +37,6 @@ export type AppOptions = {
   /** Directory with the built web app to serve (production). */
   staticDir?: string;
   logger?: boolean;
-  /** Folders the UI compares when the user has not entered any. */
-  defaultLeft?: string;
-  defaultRight?: string;
   /** Where sessions, clones and the database live. Defaults to a fresh temp folder. */
   dataDir?: string;
   /** URL schemes allowed for cloning (default: https, ssh). */
@@ -91,8 +87,6 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     maxTextFileBytes = 5 * 1024 * 1024,
     staticDir,
     logger: isLogging = false,
-    defaultLeft,
-    defaultRight,
     dataDir = path.join(tmpdir(), `om-data-${crypto.randomUUID()}`),
     allowedProtocols,
   } = options;
@@ -142,11 +136,6 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       .status(statusCodeOf(err))
       .send({ message: err instanceof Error ? err.message : 'Internal error' });
   });
-
-  app.get('/api/defaults', (): DefaultsResponse => ({
-    ...(defaultLeft !== undefined && defaultLeft !== '' ? { left: defaultLeft } : {}),
-    ...(defaultRight !== undefined && defaultRight !== '' ? { right: defaultRight } : {}),
-  }));
 
   app.get('/api/users/:user/sessions', (request) => {
     const { user } = parse(UserParamsSchema, request.params);

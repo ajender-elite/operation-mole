@@ -3,7 +3,6 @@ import type {
   ApplicabilityResult,
   CommitPatch,
   CommitPatchRequest,
-  DefaultsResponse,
   DirectoryCompareRequest,
   DirectoryCompareResult,
   RepoInfo,
@@ -17,7 +16,6 @@ import type {
 import {
   ApplicabilityResultSchema,
   CommitPatchSchema,
-  DefaultsResponseSchema,
   DirectoryCompareResultSchema,
   RepoInfoSchema,
   SessionDetailSchema,
@@ -158,14 +156,6 @@ export function fetchRepo(user: string, sessionId: string, repoId: string): Prom
     (b) => RepoInfoSchema.parse(b),
     json('POST'),
   );
-}
-
-/**
- * Folders to compare when the URL names none (`GET /api/defaults`).
- * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
- */
-export function getDefaults(): Promise<DefaultsResponse> {
-  return request('/api/defaults', (b) => DefaultsResponseSchema.parse(b));
 }
 
 /**

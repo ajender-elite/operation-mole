@@ -359,7 +359,13 @@ export class GitService {
   }
 
   #git(dir: string): SimpleGit {
-    return simpleGit({ baseDir: dir, allowEnvironment: GIT_ENV }).env(this.#env);
+    // core.longpaths: Windows git otherwise refuses checkouts with paths over 260 characters
+    // (real repositories such as nginx have them). Other systems ignore it.
+    return simpleGit({
+      baseDir: dir,
+      allowEnvironment: GIT_ENV,
+      config: ['core.longpaths=true'],
+    }).env(this.#env);
   }
 
   /** Throws CompareInputError unless `url` is a remote git URL with an allowed scheme. */

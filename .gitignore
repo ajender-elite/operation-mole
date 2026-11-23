@@ -49,7 +49,3 @@ $RECYCLE.BIN/
 .claude/settings.local.json
 *.tmp
 *.temp
-
-# The example data is byte-exact test input: it intentionally contains files that the rules
-# above would ignore (.env, *.log). Never ignore anything under examples/.
-!/examples/**

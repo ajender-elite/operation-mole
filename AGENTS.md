@@ -6,5 +6,4 @@ Short version:
 
 - Write the test first, watch it fail, then implement.
 - Finish with `pnpm check` passing.
-- Keep `examples/left` and `examples/right` byte-exact (never format them).
 - Don't weaken the git URL and environment restrictions in `apps/server/src/git/git-service.ts`.

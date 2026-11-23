@@ -21,22 +21,22 @@ Vitest runs three projects, set up in the root `vitest.config.ts`:
 
 There are no mocks of the filesystem or git, because the edge cases are in how real files and git behave.
 
-| File                                  | Covers                                                                                                                              |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `fixtures.ts`                         | `createWorkspace()` / `writeTree()` build folder trees (files, folders, symlinks, binary) in a temp folder                          |
-| `git-fixtures.ts`                     | `createOrigin()` makes a repo with `main`, `dev` and `feature/x`; `commit()` and `git()` helpers. Git runs with an isolated config. |
-| `compare-directories.test.ts`         | every status, name clashes, symlinks, errors, ignores, labels                                                                       |
-| `files-equal.test.ts`, `sort.test.ts` | byte comparison; sort order                                                                                                         |
-| `store.test.ts`                       | sessions, repos, recents (in-memory SQLite, fixed clock)                                                                            |
-| `git-service.test.ts`                 | URL validation, clone, branches, worktrees, fetch, clone errors                                                                     |
-| `app.test.ts`, `sessions-api.test.ts` | HTTP endpoints through `app.inject`, including git compares end to end                                                              |
-| `examples.test.ts`                    | that `examples/` still covers every case and sort rule                                                                              |
-| `scenario.ts`                         | `Scenario`: deterministic histories on the pinned seed (below); `repoState()` snapshots a repo for safety checks                    |
-| `om-client.ts`                        | `OmClient`: one user's session over `app.inject` (compare, file diff, commits, applicability, patch)                                |
-| `snapshot-compare.test.ts`            | snapshot identity (branch/tag/SHA), every file/folder state, renames, binary, too large, both directions, path validation           |
-| `attribution.test.ts`                 | current vs historical attribution, hunk/file/folder scope, both sides, shared history, blob-less clones, two remotes                |
-| `applicability.test.ts`               | the commit window and every applicability state, independence, patches, repository safety (success, conflict, failure, cancel)      |
-| `analysis-parsers.test.ts`            | diff, blame-porcelain, log and conflict-excerpt parsers; LRU cache                                                                  |
+| File                                  | Covers                                                                                                                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fixtures.ts`                         | `createWorkspace()` / `writeTree()` build folder trees (files, folders, symlinks, binary) in a temp folder                                              |
+| `git-fixtures.ts`                     | `createOrigin()` makes a repo with `main`, `dev` and `feature/x`; `commit()` and `git()` helpers. Git runs with an isolated config.                     |
+| `compare-directories.test.ts`         | every status, exact bytes (CRLF, trailing spaces, empty, binary), name clashes, symlinks, errors, ignores, labels                                       |
+| `files-equal.test.ts`, `sort.test.ts` | byte comparison; sort order (symbols, dots, numbers by value, case, accents)                                                                            |
+| `store.test.ts`                       | sessions, repos, recents (in-memory SQLite, fixed clock)                                                                                                |
+| `git-service.test.ts`                 | URL validation, clone, branches, worktrees, fetch, clone errors                                                                                         |
+| `app.test.ts`, `sessions-api.test.ts` | HTTP endpoints through `app.inject`, including git compares end to end                                                                                  |
+| `nginx-branches.test.ts`              | a real repository end to end: nginx `stable-1.26` → `stable-1.28` (counts, statuses, order, file diff, attribution)                                     |
+| `scenario.ts`                         | `Scenario`: deterministic histories on the pinned seed; `nginxRepo()`: the nginx fixture (both below); `repoState()` snapshots a repo for safety checks |
+| `om-client.ts`                        | `OmClient`: one user's session over `app.inject` (compare, file diff, commits, applicability, patch)                                                    |
+| `snapshot-compare.test.ts`            | snapshot identity (branch/tag/SHA), every file/folder state, renames, binary, too large, both directions, path validation                               |
+| `attribution.test.ts`                 | current vs historical attribution, hunk/file/folder scope, both sides, shared history, blob-less clones, two remotes                                    |
+| `applicability.test.ts`               | the commit window and every applicability state, independence, patches, repository safety (success, conflict, failure, cancel)                          |
+| `analysis-parsers.test.ts`            | diff, blame-porcelain, log and conflict-excerpt parsers; LRU cache                                                                                      |
 
 Tests that need `file://` clones create the app with `allowedProtocols: ['https', 'ssh', 'file']`.
 
@@ -49,19 +49,42 @@ Analysis tests build on a small public repository without needing the network:
 3. **Deterministic:** authors, committers, messages and dates are fixed (one hour apart from 2026-01-01), and git runs with no global or system config and no inherited `GIT_*` variables, so the developer's identity, aliases and hooks never matter.
 4. **Realistic clones:** scenario repos serve partial clones (`uploadpack.allowFilter`), so OM's `--filter=blob:none` clones of them really are blob-less, as from GitHub, and lazy fetching and prefetching are exercised offline.
 
+### The nginx fixture: a real repository, offline
+
+`test/seed/nginx.bundle` (1.4 MB) lets `nginx-branches.test.ts` compare two branches of a real project: [nginx/nginx](https://github.com/nginx/nginx) `stable-1.26` (Base) and `stable-1.28` (Target). `nginxRepo(dir)` serves it as a bare repository with partial clones allowed, like GitHub.
+
+Each branch is one fixture commit holding nginx's exact tree at a pinned release commit (`NGINX_1_26` and `NGINX_1_28` in `scenario.ts`), with `stable-1.28` a child of `stable-1.26`. The full history would be far too large, and a shallow copy can't serve blob-less clones. So the **trees** match GitHub's byte for byte (`test:remote` checks this), while the commit SHAs are the fixture's own. Between the two: 401 identical files, 101 modified, 2 only in Base, 11 only in Target.
+
+To rebuild it (for example, for newer releases), in an empty folder with git's own config disabled (`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1`):
+
+```bash
+git init -q --bare src.git && cd src.git
+git fetch -q --depth=1 https://github.com/nginx/nginx.git <base-sha> <target-sha>
+export GIT_AUTHOR_NAME="OM Fixture" GIT_AUTHOR_EMAIL=fixture@example.com
+export GIT_COMMITTER_NAME="OM Fixture" GIT_COMMITTER_EMAIL=fixture@example.com
+export GIT_AUTHOR_DATE="@1767225600 +0000" GIT_COMMITTER_DATE="@1767225600 +0000"
+BASE=$(git commit-tree -m "nginx-<base> tree (nginx/nginx <base-sha>)" "<base-sha>^{tree}")
+export GIT_AUTHOR_DATE="@1767229200 +0000" GIT_COMMITTER_DATE="@1767229200 +0000"
+TARGET=$(git commit-tree -p "$BASE" -m "nginx-<target> tree (nginx/nginx <target-sha>)" "<target-sha>^{tree}")
+git update-ref refs/heads/stable-<base> "$BASE"
+git update-ref refs/heads/stable-<target> "$TARGET"
+git bundle create nginx.bundle refs/heads/stable-<base> refs/heads/stable-<target>
+```
+
+Then update the constants in `scenario.ts` and the expectations in `nginx-branches.test.ts` and `remote/nginx.remote.test.ts`, and run `pnpm test:remote`.
+
 ### Remote smoke tests
 
-`pnpm test:remote` (config `apps/server/vitest.remote.config.ts`, files `test/remote/*.remote.test.ts`) clones the real repository over https and checks that the pinned commits still exist and match the seed bundle. It needs the network, so it is never part of `pnpm test` or `pnpm check`.
+`pnpm test:remote` (config `apps/server/vitest.remote.config.ts`, files `test/remote/*.remote.test.ts`) clones the real repositories over https. It checks that the pinned Hello-World commits still exist and match the seed bundle, and that the pinned nginx release commits hold exactly the fixture's trees and compare the same way. It needs the network, so it is never part of `pnpm test` or `pnpm check`.
 
 ### Any OS
 
 The suite must pass on Linux, macOS and Windows. Don't branch on `process.platform`; probe the capability instead (`test/capabilities.ts`), and use `it.runIf(...)` with a comment saying where it's missing:
 
-| Probe                    | False when                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `canCreateSymlinks`      | Windows without Developer Mode or admin rights                                                   |
-| `canMakeFilesUnreadable` | Windows (`chmod` doesn't block reads), or running as root                                        |
-| `hasExampleSymlinks`     | git checked `examples/` out with `core.symlinks=false` (the Windows default): links become files |
+| Probe                    | False when                                                |
+| ------------------------ | --------------------------------------------------------- |
+| `canCreateSymlinks`      | Windows without Developer Mode or admin rights            |
+| `canMakeFilesUnreadable` | Windows (`chmod` doesn't block reads), or running as root |
 
 Prefer keeping a test running everywhere and only adding the platform-dependent part when the probe allows it (see the sort-order test). Build paths with `path.join`, never `'/'`. Server tests get a 30s timeout because spawning git is much slower on Windows.
 

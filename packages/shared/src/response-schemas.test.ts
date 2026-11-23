@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CompareNode, DirectoryCompareResult, SessionDetail } from './api.ts';
 import {
-  DefaultsResponseSchema,
   DirectoryCompareResultSchema,
   FileCompareResultSchema,
   SessionDetailSchema,
@@ -100,7 +99,5 @@ describe('response schemas', () => {
     expect(SessionSummaryListSchema.safeParse([{ ...session, repoCount: '1' }]).success).toBe(
       false,
     );
-    expect(DefaultsResponseSchema.safeParse({ left: 1 }).success).toBe(false);
-    expect(DefaultsResponseSchema.parse({})).toEqual({});
   });
 });

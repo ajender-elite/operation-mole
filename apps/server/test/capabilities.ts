@@ -1,8 +1,6 @@
-import { lstatSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 /**
  * What this machine's file system can do. Tests depend on these probes, not on
@@ -10,7 +8,6 @@ import { fileURLToPath } from 'node:url';
  * where it doesn't:
  * - Windows creates symlinks only with Developer Mode or admin rights.
  * - `chmod 000` doesn't stop reading on Windows, nor for root on Linux/macOS.
- * - Git checks symlinks out as plain files when `core.symlinks` is false (the Windows default).
  */
 const probeDir = await mkdtemp(path.join(tmpdir(), 'om-probe-'));
 
@@ -40,13 +37,5 @@ export const canMakeFilesUnreadable = await probe(async () => {
     await chmod(file, 0o644);
   }
 });
-
-export const hasExampleSymlinks = await probe(() =>
-  Promise.resolve(
-    lstatSync(
-      fileURLToPath(new URL('../../../examples/left/links/same-target', import.meta.url)),
-    ).isSymbolicLink(),
-  ),
-);
 
 await rm(probeDir, { recursive: true, force: true });

@@ -23,6 +23,7 @@ Notes:
 - **Detached worktrees:** each branch gets its own folder, so Base and Target can be two branches of the same repo at once. Worktrees are detached, so fetching can move any branch.
 - **Reuse:** a checkout already at the branch tip is used as is. Comparing again after a fetch moves it to the new tip.
 - **Manual freshness:** nothing fetches on its own. Users click **Fetch latest** (in the Folders picker or the session overview).
+- **Long paths:** simple-git commands run with `-c core.longpaths=true`. Windows git otherwise refuses to check out paths over 260 characters (nginx has them); other systems ignore it. It's set per command, never written to the user's config.
 - **`.git` is hidden:** a worktree has a `.git` file at its root. It's skipped when comparing git sources, so it never shows as a difference.
 
 ## Analysis commands

@@ -1,6 +1,6 @@
 # Comparison rules
 
-Code: `apps/server/src/compare/` (`compare-directories.ts`, `files-equal.ts`, `sort.ts`). Each rule is covered by `test/compare-directories.test.ts`, `test/sort.test.ts`, and the real example folders in `test/examples.test.ts`.
+Code: `apps/server/src/compare/` (`compare-directories.ts`, `files-equal.ts`, `sort.ts`). Each rule is covered by `test/compare-directories.test.ts` and `test/sort.test.ts` (temp folders built per test), and on a real repository by `test/nginx-branches.test.ts`.
 
 ## Matching
 

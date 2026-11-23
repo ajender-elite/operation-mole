@@ -5,15 +5,13 @@ import { loadServerConfig } from '../src/config/server-config.ts';
 const repoRoot = path.join(path.parse(process.cwd()).root, 'repo');
 
 describe('loadServerConfig', () => {
-  it('defaults to loopback, port 5181, the example folders and .data', () => {
+  it('defaults to loopback, port 5181 and .data', () => {
     expect(loadServerConfig({}, [], repoRoot)).toEqual({
       ok: true,
       value: {
         port: 5181,
         host: '127.0.0.1',
         isProduction: false,
-        defaultLeft: path.join(repoRoot, 'examples', 'left'),
-        defaultRight: path.join(repoRoot, 'examples', 'right'),
         dataDir: path.join(repoRoot, '.data'),
       },
     });
@@ -24,8 +22,6 @@ describe('loadServerConfig', () => {
       {
         API_PORT: '6000',
         HOST: '0.0.0.0',
-        OM_LEFT: '/l',
-        OM_RIGHT: 'C:\\r',
         OM_DATA_DIR: '/d',
       },
       [],
@@ -36,8 +32,6 @@ describe('loadServerConfig', () => {
       value: {
         port: 6000,
         host: '0.0.0.0',
-        defaultLeft: '/l',
-        defaultRight: 'C:\\r',
         dataDir: '/d',
       },
     });

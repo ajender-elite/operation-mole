@@ -92,12 +92,6 @@ export type ApiError = {
   message: string;
 };
 
-/** Default folders the app compares when none are given (the repo's examples by default). */
-export type DefaultsResponse = {
-  left?: string;
-  right?: string;
-};
-
 /** A session as listed on the Sessions page. Timestamps are ISO-8601. */
 export type SessionSummary = {
   id: string;

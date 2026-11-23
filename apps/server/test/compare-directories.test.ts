@@ -77,6 +77,50 @@ describe('compareDirectories', () => {
     expect(summary.modified).toBe(2);
   });
 
+  it('compares exact bytes: line endings, trailing spaces, empty and binary files', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1]);
+    const { left, right } = await ws.pair(
+      {
+        'crlf.txt': 'one\ntwo\n',
+        'trailing.txt': 'text\n',
+        'empty.txt': '',
+        'same.bin': png,
+        'changed.bin': png,
+      },
+      {
+        'crlf.txt': 'one\r\ntwo\r\n',
+        'trailing.txt': 'text \n',
+        'empty.txt': '',
+        'same.bin': png,
+        'changed.bin': Buffer.concat([png, Buffer.from([2])]),
+      },
+    );
+    const { root } = await compareDirectories(left, right);
+    const status = (name: string) => find(root, name).status;
+    expect(['crlf.txt', 'trailing.txt', 'changed.bin'].map(status)).toEqual([
+      'modified',
+      'modified',
+      'modified',
+    ]);
+    expect(['empty.txt', 'same.bin'].map(status)).toEqual(['identical', 'identical']);
+    expect(find(root, 'empty.txt').left?.size).toBe(0);
+  });
+
+  it('matches names with accents and spaces across sides', async () => {
+    const { left, right } = await ws.pair(
+      { 'résumé.txt': 'cv', 'my notes.txt': 'a', 'naïve dir': { 'x.txt': 'x' } },
+      { 'résumé.txt': 'cv', 'my notes.txt': 'b', 'naïve dir': { 'x.txt': 'x' } },
+    );
+    const { root, summary } = await compareDirectories(left, right);
+    // HFS+ (older macOS) hands names back decomposed; compare them normalized.
+    const byName = (name: string) =>
+      root.children?.find((c) => c.name.normalize('NFC') === name.normalize('NFC'));
+    expect(byName('résumé.txt')?.status).toBe('identical');
+    expect(byName('my notes.txt')?.status).toBe('modified');
+    expect(byName('naïve dir')?.status).toBe('identical');
+    expect(summary).toEqual({ identical: 2, modified: 1, onlyLeft: 0, onlyRight: 0, errors: 0 });
+  });
+
   it('includes the full contents of a directory present on one side only', async () => {
     const { left, right } = await ws.pair({ only: { 'a.txt': 'a', nested: { 'b.txt': 'b' } } }, {});
     const { root, summary } = await compareDirectories(left, right);
@@ -145,7 +189,12 @@ describe('compareDirectories', () => {
   it.runIf(canCreateSymlinks)('compares symlinks by target without following them', async () => {
     const { left, right } = await ws.pair(
       { dir: { 'f.txt': 'f' }, same: { symlink: 'dir' }, other: { symlink: 'dir' } },
-      { dir: { 'f.txt': 'f' }, same: { symlink: 'dir' }, other: { symlink: 'elsewhere' } },
+      {
+        dir: { 'f.txt': 'f' },
+        same: { symlink: 'dir' },
+        other: { symlink: 'elsewhere' },
+        added: { symlink: 'dir' },
+      },
     );
     const { root } = await compareDirectories(left, right);
     const same = find(root, 'same');
@@ -154,6 +203,19 @@ describe('compareDirectories', () => {
     expect(same.left?.linkTarget).toBe('dir');
     expect(same.children).toBeUndefined();
     expect(find(root, 'other').status).toBe('modified');
+    expect(find(root, 'added')).toMatchObject({ status: 'only-right', right: { kind: 'symlink' } });
+  });
+
+  it.runIf(canCreateSymlinks)('marks a symlink that became a file as modified', async () => {
+    const { left, right } = await ws.pair(
+      { 'target.txt': 't', entry: { symlink: 'target.txt' } },
+      { 'target.txt': 't', entry: 't' },
+    );
+    const { root } = await compareDirectories(left, right);
+    const entry = find(root, 'entry');
+    expect(entry.status).toBe('modified');
+    expect(entry.left?.kind).toBe('symlink');
+    expect(entry.right?.kind).toBe('file');
   });
 
   it('sorts children with directories first, then by name', async () => {

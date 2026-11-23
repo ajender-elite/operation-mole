@@ -8,9 +8,6 @@ export type ServerConfig = {
   readonly host: string;
   /** Serve the built web app from `apps/web/dist` too. */
   readonly isProduction: boolean;
-  /** Folders the Folders page compares when the URL names none. */
-  readonly defaultLeft: string;
-  readonly defaultRight: string;
   /** Sessions, cloned repos and the database. */
   readonly dataDir: string;
 };
@@ -26,8 +23,6 @@ const EnvSchema = z.object({
   // Local tool with filesystem access: bind to loopback unless told otherwise.
   HOST: z.string().min(1).default('127.0.0.1'),
   NODE_ENV: z.string().optional(),
-  OM_LEFT: z.string().min(1).optional(),
-  OM_RIGHT: z.string().min(1).optional(),
   OM_DATA_DIR: z.string().min(1).optional(),
 });
 
@@ -37,7 +32,7 @@ const EnvSchema = z.object({
  * @param env - Usually `process.env`.
  * @param argv - Usually `process.argv`. `--production` turns on production mode; it replaces
  *   `NODE_ENV=production node …`, which only works in POSIX shells (npm uses cmd.exe on Windows).
- * @param repoRoot - Absolute path of the repository, for the default example and data folders.
+ * @param repoRoot - Absolute path of the repository, for the default data folder.
  * @returns The config, or an error naming the invalid variable.
  */
 export function loadServerConfig(
@@ -57,8 +52,6 @@ export function loadServerConfig(
       port: vars.API_PORT,
       host: vars.HOST,
       isProduction: argv.includes('--production') || vars.NODE_ENV === 'production',
-      defaultLeft: vars.OM_LEFT ?? path.join(repoRoot, 'examples', 'left'),
-      defaultRight: vars.OM_RIGHT ?? path.join(repoRoot, 'examples', 'right'),
       dataDir: vars.OM_DATA_DIR ?? path.join(repoRoot, '.data'),
     },
   };

@@ -17,8 +17,6 @@ const staticDir = config.isProduction && existsSync(webDist) ? webDist : undefin
 const app = buildApp({
   logger: true,
   dataDir: config.dataDir,
-  defaultLeft: config.defaultLeft,
-  defaultRight: config.defaultRight,
   ...(staticDir === undefined ? {} : { staticDir }),
 });
 

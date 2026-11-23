@@ -4,7 +4,6 @@ import type {
   CommitInfo,
   CommitPatch,
   CompareNode,
-  DefaultsResponse,
   DirectoryCompareResult,
   EntryInfo,
   FileCompareResult,
@@ -86,12 +85,6 @@ export const FileCompareResultSchema = z.object({
   right: FileContentSchema.exactOptional(),
   identical: z.boolean(),
 }) satisfies z.ZodType<FileCompareResult>;
-
-/** `GET /api/defaults`. */
-export const DefaultsResponseSchema = z.object({
-  left: z.string().exactOptional(),
-  right: z.string().exactOptional(),
-}) satisfies z.ZodType<DefaultsResponse>;
 
 /** One session, as listed or created. */
 export const SessionSummarySchema = z.object({

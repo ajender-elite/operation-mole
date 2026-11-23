@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CompareInputError } from '../src/errors.ts';
 import { GitService, configuredSshCommand, gitEnvironment } from '../src/git/git-service.ts';
@@ -183,6 +184,23 @@ describe('clone, checkout and fetch', () => {
     const first = await service.checkout(repoDir, 'main', wt('main'));
     const second = await service.checkout(repoDir, 'main', wt('main'));
     expect(second).toBe(first);
+  });
+
+  // Windows git refuses paths over 260 characters unless core.longpaths is on (nginx needs it).
+  it('checks out files whose full path is longer than 260 characters', async () => {
+    const deep = ['a', 'b', 'c', 'd', 'e'].map((c) => c.repeat(50)).join('/');
+    const rel = `${deep}/long-name-file.txt`;
+    const longOrigin = path.join(base, 'long-origin');
+    mkdirSync(longOrigin);
+    git(longOrigin, 'init', '-q', '-b', 'main');
+    git(longOrigin, 'config', 'core.longpaths', 'true');
+    commit(longOrigin, { [rel]: 'deep\n' }, 'long path');
+
+    const longClone = path.join(base, 'long-clone');
+    await service.clone(pathToFileURL(longOrigin).href, longClone);
+    const checkout = await service.checkout(longClone, 'main', path.join(base, 'long-wt'));
+    expect(path.join(checkout, rel).length).toBeGreaterThan(260);
+    expect(read(checkout, ...rel.split('/'))).toBe('deep\n');
   });
 
   it('rejects an unknown branch', async () => {

@@ -20,6 +20,64 @@ export const SEED_FIRST = '553c2077f0edc3d5dc5d17262f6aa498e69d6f8e';
 /** "New line at end of file. --Signed off by Spaceghost" */
 export const SEED_NEWLINE = '762941318ee16e59dabbacb1b4049eec22f0d303';
 
+/**
+ * Two release branches of nginx/nginx, frozen in `seed/nginx.bundle` (1.4 MB) so the normal
+ * suite needs no network. Each branch is one commit holding nginx's exact tree at a pinned
+ * release commit, with `stable-1.28` a child of `stable-1.26` and a fixed author and date:
+ * real-world contents and a real diff, without nginx's full history. `test/remote/` checks the
+ * trees against GitHub. How to rebuild the bundle: docs/testing.md.
+ */
+export const NGINX_BUNDLE = fileURLToPath(new URL('seed/nginx.bundle', import.meta.url));
+
+/** One branch of {@link NGINX_BUNDLE}. */
+export type NginxBranch = {
+  /** Branch name, as on github.com/nginx/nginx. */
+  branch: string;
+  /** The fixture's commit for it. */
+  commit: string;
+  /** The nginx/nginx commit whose tree it holds. */
+  upstream: string;
+  /** That tree, identical in the fixture and upstream. */
+  tree: string;
+};
+
+/** nginx 1.26.3 (Base in tests). */
+export const NGINX_1_26: NginxBranch = {
+  branch: 'stable-1.26',
+  commit: 'a280a02a0d94bf08134927565a7c91aa000db4e8',
+  upstream: '1be0fb0c9f9bc3489c7b40576efd6afe6b2eccd5',
+  tree: 'b23b529a82de4b47b740754f4a2480a8658e5ad9',
+};
+
+/** nginx 1.28.3 (Target in tests). */
+export const NGINX_1_28: NginxBranch = {
+  branch: 'stable-1.28',
+  commit: 'b3451064966a947280381a0a645e079b287e67a0',
+  upstream: '9b958b000776c88036cd800c66e7e4ad39e6fd41',
+  tree: 'cca55e48e8374c3cd92f12bfccfe46f4fc6ea3e2',
+};
+
+/**
+ * A bare repository at `dir` with nginx's `stable-1.26` and `stable-1.28` branches from
+ * {@link NGINX_BUNDLE}, serving partial clones (as GitHub does). Returns its `file://` URL.
+ */
+export function nginxRepo(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  const git = (...args: string[]) =>
+    execFileSync('git', args, { cwd: dir, env: isolatedEnv(), encoding: 'utf8' }).trim();
+  git('init', '-q', '--bare');
+  git('config', 'uploadpack.allowFilter', 'true');
+  git('config', 'uploadpack.allowAnySHA1InWant', 'true');
+  git('fetch', '-q', NGINX_BUNDLE, 'refs/heads/*:refs/heads/*');
+  git('symbolic-ref', 'HEAD', `refs/heads/${NGINX_1_28.branch}`);
+  for (const { branch, commit, tree } of [NGINX_1_26, NGINX_1_28]) {
+    if (git('rev-parse', branch) !== commit || git('rev-parse', `${branch}^{tree}`) !== tree) {
+      throw new Error(`nginx bundle does not match ${branch}`);
+    }
+  }
+  return pathToFileURL(dir).href;
+}
+
 /** A fixed identity: tests compare names, so nothing comes from the machine. */
 export type Person = { name: string; email: string };
 export const ALICE: Person = { name: 'Alice Upstream', email: 'alice@example.com' };
