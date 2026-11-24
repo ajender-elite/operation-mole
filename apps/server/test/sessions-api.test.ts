@@ -2,12 +2,11 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { DirectoryCompareResult, RepoInfo, SessionDetail, SessionSummary } from '@om/shared';
+import type { GitCompareTrees, RepoInfo, SessionDetail, SessionSummary } from '@om/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.ts';
 import { createOrigin, git, commit } from './git-fixtures.ts';
-import { writeTree } from './fixtures.ts';
 
 let base: string;
 let dataDir: string;
@@ -76,7 +75,6 @@ describe('sessions', () => {
       user: 'erin',
       session: { id: session.id },
       repos: [],
-      recent: [],
     });
     const other = await app.inject({
       method: 'GET',
@@ -125,7 +123,7 @@ describe('repos and git comparisons', () => {
   it('compares two branches of a repo, ignoring .git, and records it', async () => {
     const res = await app.inject({
       method: 'POST',
-      url: '/api/compare/directories',
+      url: '/api/git/compare-trees',
       payload: {
         user: 'gita',
         sessionId,
@@ -134,7 +132,7 @@ describe('repos and git comparisons', () => {
       },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json<DirectoryCompareResult>();
+    const body = res.json<GitCompareTrees>().folder;
     expect(body.leftLabel).toBe('origin @ main');
     expect(body.rightLabel).toBe('origin @ dev');
     expect(body.root.children?.map((c) => [c.name, c.status])).toEqual([
@@ -148,43 +146,12 @@ describe('repos and git comparisons', () => {
       onlyRight: 1,
       errors: 0,
     });
-
-    const detail = await app.inject({
-      method: 'GET',
-      url: `/api/users/gita/sessions/${sessionId}`,
-    });
-    expect(detail.json<SessionDetail>().recent[0]).toMatchObject({
-      leftLabel: 'origin @ main',
-      rightLabel: 'origin @ dev',
-      left: { type: 'git', repoId: repo.id, branch: 'main' },
-    });
   });
 
-  it('compares a branch with a local folder', async () => {
-    const local = path.join(base, 'local');
-    await writeTree(local, { 'README.md': '# Origin\n' });
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/compare/directories',
-      payload: {
-        user: 'gita',
-        sessionId,
-        left: { type: 'git', repoId: repo.id, branch: 'main' },
-        right: { type: 'path', path: local },
-      },
-    });
-    const body = res.json<DirectoryCompareResult>();
-    expect(body.rightLabel).toBe(local);
-    expect(body.root.children?.map((c) => [c.name, c.status])).toEqual([
-      ['src', 'only-left'],
-      ['README.md', 'identical'],
-    ]);
-  });
-
-  it('returns 400 for an unknown branch and for git sources without a session', async () => {
+  it('returns 400 for an unknown branch and for a comparison without a session', async () => {
     const unknown = await app.inject({
       method: 'POST',
-      url: '/api/compare/directories',
+      url: '/api/git/compare-trees',
       payload: {
         user: 'gita',
         sessionId,
@@ -196,7 +163,7 @@ describe('repos and git comparisons', () => {
 
     const noSession = await app.inject({
       method: 'POST',
-      url: '/api/compare/directories',
+      url: '/api/git/compare-trees',
       payload: {
         left: { type: 'git', repoId: repo.id, branch: 'main' },
         right: { type: 'git', repoId: repo.id, branch: 'dev' },
@@ -209,7 +176,7 @@ describe('repos and git comparisons', () => {
     const other = (await createSession('hank', 'Mine')).session.id;
     const res = await app.inject({
       method: 'POST',
-      url: '/api/compare/directories',
+      url: '/api/git/compare-trees',
       payload: {
         user: 'hank',
         sessionId: other,

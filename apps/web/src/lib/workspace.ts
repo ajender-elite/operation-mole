@@ -7,7 +7,7 @@ export type WorkspaceTab = {
 };
 
 /** What a tab shows. */
-export type TabKind = 'home' | 'folders' | 'file' | 'upstream' | 'commit' | 'commits';
+export type TabKind = 'home' | 'folders' | 'file' | 'upstream' | 'commit' | 'commits' | 'log';
 
 const KINDS: ReadonlyMap<string, TabKind> = new Map([
   ['folders', 'folders'],
@@ -15,6 +15,7 @@ const KINDS: ReadonlyMap<string, TabKind> = new Map([
   ['upstream', 'upstream'],
   ['commit', 'commit'],
   ['commits', 'commits'],
+  ['log', 'log'],
 ]);
 
 function split(url: string): { pathname: string; params: URLSearchParams } {
@@ -42,6 +43,7 @@ const IDENTITY: Record<Exclude<TabKind, 'home'>, string[]> = {
   file: FILE,
   commit: ['repo', 'commit'],
   commits: [...FILE, 'side'],
+  log: ['repo', 'top', 'bottom'],
 };
 
 function key(params: URLSearchParams, names: string[]): string | undefined {

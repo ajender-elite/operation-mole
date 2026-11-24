@@ -1,6 +1,6 @@
 import type { GitSource, RepoInfo } from '@om/shared';
 
-/** One side of a comparison: `left` is Base, `right` is Target in the UI. */
+/** One side of a comparison: `left` is Left, `right` is Right in the UI. */
 export type Side = 'left' | 'right';
 
 /**

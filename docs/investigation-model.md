@@ -1,30 +1,30 @@
 # Investigation model
 
 How OM answers "what is different, what accounts for it, and does upstream apply?", and the
-precise git meaning of each answer. Code: `apps/server/src/snapshot/`, `apps/server/src/upstream/`,
-`apps/web/src/lib/attribution.ts`, `apps/web/src/pages/directory-compare-page.tsx` and
-`apps/web/src/pages/upstream-page.tsx`.
+precise git meaning of each answer. Code: `apps/server/src/git-api/` (the primitives),
+`apps/server/src/snapshot/` (file diffs), `apps/web/src/lib/attribution.ts` and `apps/web/src/lib/applicability.ts`
+(the composition), `apps/web/src/pages/directory-compare-page.tsx` and `apps/web/src/pages/upstream-page.tsx`.
 
 ## Terms
 
-| Term                      | In OM                                                                                                                                                                                                                                                                       |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Snapshot**              | A git side resolved to an exact commit (`SnapshotInfo`). A branch, tag or SHA can name it; the commit is its identity. Folders shows each side's commit next to its label.                                                                                                  |
-| **Base / Target**         | The two snapshots of a comparison (`left` / `right` in code and URLs). Comparison is neutral: neither side is upstream, newer or correct.                                                                                                                                   |
-| **Snapshot diff**         | Directional: hunks read Base → Target. `−` lines exist only in Base, `+` lines only in Target. Swapping sides swaps the signs.                                                                                                                                              |
-| **Divergence commit**     | A commit that `git blame` currently attributes at least one differing line to, **on that line's own side**: `−` lines are blamed in Base's history, `+` lines in Target's. It is not necessarily where the content was first written or where the histories first diverged. |
-| **Upstream / downstream** | Roles introduced only by the Upstream page: upstream = Base (`left*` in the URL), downstream = Target (`right*`). The same URLs carry snapshots between Folders and Upstream.                                                                                               |
-| **Applicability**         | What applying one upstream commit (its change against its first parent) to the pristine downstream snapshot does, computed with `git merge-tree`.                                                                                                                           |
+| Term                      | In OM                                                                                                                                                                                                                                                                      |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Snapshot**              | A git side resolved to an exact commit (`SnapshotInfo`). A branch, tag or SHA can name it; the commit is its identity. Folders shows each side's commit next to its label.                                                                                                 |
+| **Left / Right**          | The two snapshots of a comparison (`left` / `right` in code and URLs). Comparison is neutral: neither side is upstream, newer or correct.                                                                                                                                  |
+| **Snapshot diff**         | Directional: hunks read Left → Right. `−` lines exist only in Left, `+` lines only in Right. Swapping sides swaps the signs.                                                                                                                                               |
+| **Divergence commit**     | A commit that `git blame` currently attributes at least one differing line to, **on that line's own side**: `−` lines are blamed in Left's history, `+` lines in Right's. It is not necessarily where the content was first written or where the histories first diverged. |
+| **Upstream / downstream** | Roles introduced only by the Upstream page: upstream = Left (`left*` in the URL), downstream = Right (`right*`). The same URLs carry snapshots between Folders and Upstream.                                                                                               |
+| **Applicability**         | What applying one upstream commit (its change against its first parent) to the pristine downstream snapshot does, computed with `git merge-tree`.                                                                                                                          |
 
 ## Attribution on request, scoped to the focus
 
-Folder Compare and File Compare first show only what differs. Attribution is computed when the user asks (**Explain difference**), for exactly what they asked about, and then narrows with focus inside a file:
+Folder Compare and File Compare first show only what differs. Attribution is computed when the user asks (**Explain difference**), for exactly what they asked about, and then narrows with focus inside a file. The server answers each question with a git primitive (`POST /api/git/blame`, `POST /api/git/ancestry`); the browser combines the answers:
 
 | Focus                              | Scope                                               | Source                                                                   |
 | ---------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
 | "Explain differences here"         | Repository or Folder: every differing file under it | one file diff per differing file, 4 at a time, aggregated in the browser |
 | "Explain difference" on a folder   | that folder                                         | same                                                                     |
-| "Explain difference" on a file     | File                                                | one `POST /api/snapshot/file-diff`                                       |
+| "Explain difference" on a file     | File                                                | `POST /api/git/blame` for each side and `POST /api/git/ancestry`         |
 | a hunk (click its header, `n`/`p`) | Hunk                                                | the hunk's lines                                                         |
 | a line (click it, `j`/`k`)         | Line                                                | that line's commit                                                       |
 | a commit (`commit=` in the URL)    | Commit details and its footprint                    | every file diff analyzed so far in this comparison                       |
@@ -35,7 +35,7 @@ Rules the panel keeps:
 - **A hunk keeps every commit.** Counts are per commit and per side; a hunk is never forced into one commit.
 - **Shared history is labelled.** A commit reachable from both snapshots (`inLeft` and `inRight`) accounts for content both once had; the difference comes from the other side changing or removing it. Such commits are grouped after the one-sided ones under "Shared history".
 - **Unattributed lines are counted.** Binary or oversized files, and lines where blame failed, show as "N of M changed lines have no attribution".
-- **Nothing is attributed unasked.** Opening a comparison or a file runs no `git blame`: File Compare requests the plain diff (`attribute: false`); the explained diff is fetched only after "Explain difference".
+- **Nothing is attributed unasked.** Opening a comparison or a file runs no `git blame`: File Compare requests the plain diff (`attribute: false`); the explained diff is fetched only after "Explain difference". Blame of a side is also on request (the **Blame Left/Right** toggle), and is labelled as the last change in that side’s history, not as the cause.
 - **Large folders still confirm.** Asked to explain more than 40 differing files, the panel says how many and starts on a click. The tree is navigable immediately either way.
 - **Commit → differences.** Selecting a commit lists the files and hunks it accounts for among analyzed files, highlights them (and their folders) in the tree, and dims other lines in the diff. "Search every difference under …" analyzes the current folder to find the rest.
 
@@ -79,7 +79,7 @@ The audit before this work, against the product contract:
 | Snapshot model                   | PARTIAL: git sides were "repo @ branch"; branch tips only; no commit identity | Resolved commit per side; branch, tag or SHA                                                          |
 | Folder compare                   | COMPLETE for statuses, sort, URL state                                        | Kept as is                                                                                            |
 | Renames                          | MISSING (decision 2 declined it)                                              | Git rename detection links one-sided entries for git sides                                            |
-| Text compare                     | PARTIAL: path-based Monaco diff with its own diff engine, no hunk model       | Git's hunks for git snapshots in a File Compare tab, with direction, focus and on-request attribution |
+| Text compare                     | PARTIAL: path-based diff with its own diff engine, no hunk model              | Git's hunks for git snapshots in a File Compare tab, with direction, focus and on-request attribution |
 | Attribution (folder → line)      | MISSING                                                                       | Directional blame at every scope, commit → differences                                                |
 | Upstream history / applicability | MISSING (Lab placeholder)                                                     | Upstream page                                                                                         |
 | Cross-remote analysis            | ARCHITECTURALLY LIMITING: one clone per remote, no shared object view         | Object views via alternates in the environment (no clone is modified)                                 |

@@ -1,7 +1,14 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { CompareNode, DirectoryCompareResult, GitSource, RepoInfo } from '@om/shared';
+import type {
+  CompareNode,
+  FolderComparison,
+  GitAncestry,
+  GitBlame,
+  GitSource,
+  RepoInfo,
+} from '@om/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.ts';
@@ -40,7 +47,7 @@ beforeAll(async () => {
       'assets/logo.png': PNG_1,
       'big.txt': 'small\n',
     },
-    'Base layout',
+    'Left layout',
   );
   scenario.branch('blue');
   scenario.tag('v1.0');
@@ -83,11 +90,7 @@ afterAll(async () => {
 
 const src = (ref: string): GitSource => om.source(repo, ref);
 
-function node(
-  result: DirectoryCompareResult,
-  p: string,
-  kind: 'dir' | 'file' = 'file',
-): CompareNode {
+function node(result: FolderComparison, p: string, kind: 'dir' | 'file' = 'file'): CompareNode {
   const found: CompareNode[] = [];
   const walk = (n: CompareNode) => {
     if (n.path === p) found.push(n);
@@ -122,8 +125,8 @@ describe('snapshot identity', () => {
   });
 });
 
-describe('Base → Target', () => {
-  let r: DirectoryCompareResult;
+describe('Left → Right', () => {
+  let r: FolderComparison;
   beforeAll(async () => {
     r = await om.compare(src('blue'), src('green'));
   });
@@ -168,7 +171,7 @@ describe('Base → Target', () => {
   });
 });
 
-describe('Target → Base (the reverse direction)', () => {
+describe('Right → Left (the reverse direction)', () => {
   it('mirrors every status and rename', async () => {
     const forward = await om.compare(src('blue'), src('green'));
     const back = await om.compare(src('green'), src('blue'));
@@ -185,7 +188,7 @@ describe('Target → Base (the reverse direction)', () => {
 });
 
 describe('file diffs between snapshots', () => {
-  it('returns git hunks with Base and Target line numbers', async () => {
+  it('returns git hunks with Left and Right line numbers', async () => {
     const diff = await om.fileDiff({
       left: src('blue'),
       right: src('green'),
@@ -282,22 +285,28 @@ describe('file diffs between snapshots', () => {
   });
 
   it('rejects unknown paths and paths outside the snapshot', async () => {
-    const missing = await om.inject('/api/snapshot/file-diff', {
+    const missing = await om.inject('/api/git/diff', {
+      user: om.user,
+      sessionId: om.sessionId,
       left: src('blue'),
       right: src('green'),
-      leftPath: 'nope.txt',
+      files: [{ leftPath: 'nope.txt' }],
     });
     expect(missing.statusCode).toBe(404);
-    const escape = await om.inject('/api/snapshot/file-diff', {
+    const escape = await om.inject('/api/git/diff', {
+      user: om.user,
+      sessionId: om.sessionId,
       left: src('blue'),
       right: src('green'),
-      leftPath: '../etc/passwd',
+      files: [{ leftPath: '../etc/passwd' }],
     });
     expect(escape.statusCode).toBe(400);
-    const magic = await om.inject('/api/snapshot/file-diff', {
+    const magic = await om.inject('/api/git/diff', {
+      user: om.user,
+      sessionId: om.sessionId,
       left: src('blue'),
       right: src('green'),
-      leftPath: ':(glob)**',
+      files: [{ leftPath: ':(glob)**' }],
     });
     expect(magic.statusCode).toBe(404);
   });
@@ -314,12 +323,26 @@ describe('the pinned public seed', () => {
       rightPath: 'README',
     });
     const added = diff.hunks.flatMap((h) => h.lines).find((l) => l.kind === 'added');
-    expect(added?.commit).toBe(SEED_NEWLINE);
-    expect(diff.commits.find((c) => c.sha === SEED_NEWLINE)).toMatchObject({
+    // Git blame, on the right side, names the commit that added the line; ancestry says which side has it.
+    const res = await om.inject('/api/git/blame', {
+      user: om.user,
+      sessionId: om.sessionId,
+      source: src(SEED_COMMIT),
+      path: 'README',
+      lines: [added?.rightLine ?? 0],
+    });
+    const blame = res.json<GitBlame>();
+    expect(blame.lines[0]?.commit).toBe(SEED_NEWLINE);
+    expect(blame.commits.find((c) => c.sha === SEED_NEWLINE)).toMatchObject({
       authorName: 'Johnneylee Jack Rollins',
       authorDate: '2011-09-13T21:42:41-07:00',
-      inRight: true,
-      inLeft: false,
     });
+    const ancestry = await om.inject('/api/git/ancestry', {
+      user: om.user,
+      sessionId: om.sessionId,
+      tip: src(SEED_FIRST),
+      commits: [SEED_NEWLINE],
+    });
+    expect(ancestry.json<GitAncestry>().results[0]?.isAncestor).toBe(false);
   });
 });

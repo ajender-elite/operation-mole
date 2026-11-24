@@ -3,32 +3,49 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import {
+  AddRemoteRequestSchema,
   AddRepoRequestSchema,
-  ApplicabilityRequestSchema,
-  CommitPatchRequestSchema,
+  RemoteNameSchema,
   CreateSessionRequestSchema,
-  DirectoryCompareRequestSchema,
-  FileCompareQuerySchema,
-  SessionIdSchema,
-  SnapshotFileDiffRequestSchema,
-  UpstreamCommitsRequestSchema,
-  UsernameSchema,
-  type FileCompareResult,
+  type GitAncestry,
+  GitAncestryRequestSchema,
+  type GitBlame,
+  GitBlameRequestSchema,
+  type GitCompareTrees,
+  GitCompareTreesRequestSchema,
+  type GitDiff,
+  GitDiffRequestSchema,
+  type GitLog,
+  GitLogRequestSchema,
+  type GitMergeBase,
+  GitMergeBaseRequestSchema,
+  type GitMergeTree,
+  type GitPatchEquivalents,
+  GitPatchEquivalentsRequestSchema,
+  GitMergeTreeRequestSchema,
+  type GitResolve,
+  GitResolveRequestSchema,
+  type GitRevision,
+  GitShowRequestSchema,
+  type ServerInfo,
+  type ServerLimits,
   type SessionDetail,
-  type UpstreamCommitList,
+  SessionIdSchema,
+  UsernameSchema,
 } from '@om/shared';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z, type ZodError, type ZodType } from 'zod';
-import { compareDirectories } from './compare/compare-directories.ts';
-import { filesEqual } from './compare/files-equal.ts';
+import { StoreCacheStorage } from './cache/store-cache-storage.ts';
+import { TieredAnalysisCache } from './cache/analysis-cache.ts';
+import { DEFAULT_LIMITS } from './config/server-config.ts';
 import { CompareInputError, ConflictError, NotFoundError } from './errors.ts';
-import { readFileForDiff } from './files/read-file.ts';
+import { GitPrimitives } from './git-api/primitives.ts';
+import { readLog } from './git-api/log.ts';
 import { GitService } from './git/git-service.ts';
 import { RepoManager, toInfo } from './git/repo-manager.ts';
-import { annotateRenames } from './snapshot/annotate-renames.ts';
 import { SnapshotAnalyzer } from './snapshot/snapshot-analyzer.ts';
-import { Store } from './store/store.ts';
-import { UpstreamAnalyzer } from './upstream/upstream-analyzer.ts';
+import { StoreRegistry } from './store/store-registry.ts';
+import { CommitPatchReader } from './git-api/commit-patch.ts';
 
 /** Options for {@link buildApp}. All are optional; tests rely on the defaults. */
 export type AppOptions = {
@@ -41,19 +58,29 @@ export type AppOptions = {
   dataDir?: string;
   /** URL schemes allowed for cloning (default: https, ssh). */
   allowedProtocols?: string[];
-  /** Where applicability analysis puts its temporary object directories. Default `<dataDir>/scratch`. */
+  /** Where merge-tree puts its temporary object directories. Default `<dataDir>/scratch`. */
   scratchDir?: string;
+  /** Limits on sessions, repos and remotes. Unset ones take the defaults (10 each). */
+  limits?: Partial<ServerLimits>;
+  /** Most cached analysis results each user keeps, in bytes. Default 256 MB. */
+  cacheMaxBytes?: number;
 };
 
 /** Route parameters, validated like any other input. */
 const UserParamsSchema = z.object({ user: UsernameSchema });
 const SessionParamsSchema = z.object({ user: UsernameSchema, sessionId: SessionIdSchema });
 const RepoParamsSchema = SessionParamsSchema.extend({ repoId: z.string().min(1) });
+const RemoteParamsSchema = RepoParamsSchema.extend({ remote: RemoteNameSchema });
 
 /**
  * Aborted when the client goes away before the response is sent (navigated elsewhere,
  * cancelled the query), so long git analysis stops instead of running for nobody.
  */
+/** The revision a primitive resolved, as the API reports it. */
+function revisionOf(snapshot: { commit: string; ref: string; label: string }): GitRevision {
+  return { commit: snapshot.commit, ref: snapshot.ref, label: snapshot.label };
+}
+
 function abortOnDisconnect(reply: FastifyReply): AbortSignal {
   const controller = new AbortController();
   reply.raw.on('close', () => {
@@ -89,21 +116,28 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     logger: isLogging = false,
     dataDir = path.join(tmpdir(), `om-data-${crypto.randomUUID()}`),
     allowedProtocols,
+    cacheMaxBytes = 256 * 1024 * 1024,
   } = options;
   const { scratchDir = path.join(dataDir, 'scratch') } = options;
   const app = Fastify({ logger: isLogging });
 
   mkdirSync(dataDir, { recursive: true });
-  const store = new Store(path.join(dataDir, 'om.db'));
+  const limits: ServerLimits = { ...DEFAULT_LIMITS, ...options.limits };
+  const stores = new StoreRegistry(dataDir, { maxSessions: limits.sessionsPerUser });
   const git = new GitService(allowedProtocols ? { allowedProtocols } : {});
-  const repos = new RepoManager(store, git, dataDir);
-  const snapshots = new SnapshotAnalyzer(git, {
-    maxTextBytes: maxTextFileBytes,
-    maxDiffLines: 20_000,
-  });
-  const upstream = new UpstreamAnalyzer(git, snapshots, { scratchDir });
+  const cache = new TieredAnalysisCache(new StoreCacheStorage(stores, cacheMaxBytes));
+  const repos = new RepoManager(stores, git, dataDir, limits, cache);
+  const snapshots = new SnapshotAnalyzer(
+    git,
+    { maxTextBytes: maxTextFileBytes, maxDiffLines: 20_000 },
+    cache,
+  );
+  const patches = new CommitPatchReader(git);
+  const primitives = new GitPrimitives(git, snapshots, { scratchDir });
+  // Folders that no row names (left by a crash or an interrupted delete) go before anything is served.
+  repos.sweepOrphans();
   app.addHook('onClose', () => {
-    store.close();
+    stores.close();
   });
 
   /** Validates `value` or throws a 400 with zod's message. */
@@ -117,13 +151,15 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     parse(SessionParamsSchema, request.params);
 
   const sessionDetail = (user: string, sessionId: string): SessionDetail => {
-    const session = store.getSession(user, sessionId);
-    if (session === undefined) throw new NotFoundError(`Session not found: ${sessionId}`);
+    const store = stores.read(user);
+    const session = store?.getSession(sessionId);
+    if (store === undefined || session === undefined) {
+      throw new NotFoundError(`Session not found: ${sessionId}`);
+    }
     return {
       user,
       session,
       repos: store.listRepos(sessionId).map(toInfo),
-      recent: store.listComparisons(sessionId),
     };
   };
 
@@ -137,15 +173,30 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       .send({ message: err instanceof Error ? err.message : 'Internal error' });
   });
 
+  // What the server's git can do and how it reaches remotes. No URLs, credentials or env values.
+  let gitVersion: Promise<string> | undefined;
+  app.get('/api/server', async (): Promise<ServerInfo> => {
+    gitVersion ??= git.version();
+    return {
+      git: { version: await gitVersion },
+      access: {
+        protocols: git.allowedProtocols,
+        isInteractive: false,
+        hasSshAgent: git.sshAgentAvailable(),
+      },
+      limits,
+    };
+  });
+
   app.get('/api/users/:user/sessions', (request) => {
     const { user } = parse(UserParamsSchema, request.params);
-    return store.listSessions(user);
+    return stores.read(user)?.listSessions() ?? [];
   });
 
   app.post('/api/users/:user/sessions', (request, reply) => {
     const { user } = parse(UserParamsSchema, request.params);
     const { name } = parse(CreateSessionRequestSchema, request.body);
-    return reply.status(201).send(store.createSession(user, name));
+    return reply.status(201).send(stores.write(user).createSession(name));
   });
 
   app.get('/api/users/:user/sessions/:sessionId', (request) => {
@@ -168,111 +219,161 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     return await reply.status(isCreated ? 201 : 200).send(repo);
   });
 
+  app.delete('/api/users/:user/sessions/:sessionId/repos/:repoId', async (request, reply) => {
+    const { user, sessionId, repoId } = parse(RepoParamsSchema, request.params);
+    await repos.deleteRepo(user, sessionId, repoId);
+    return await reply.status(204).send();
+  });
+
+  app.post('/api/users/:user/sessions/:sessionId/repos/:repoId/remotes', async (request, reply) => {
+    const { user, sessionId, repoId } = parse(RepoParamsSchema, request.params);
+    const body = parse(AddRemoteRequestSchema, request.body);
+    return await reply.status(201).send(await repos.addRemote(user, sessionId, repoId, body));
+  });
+
+  app.post(
+    '/api/users/:user/sessions/:sessionId/repos/:repoId/remotes/:remote/fetch',
+    (request) => {
+      const { user, sessionId, repoId, remote } = parse(RemoteParamsSchema, request.params);
+      return repos.fetchRemote(user, sessionId, repoId, remote);
+    },
+  );
+
+  app.post(
+    '/api/users/:user/sessions/:sessionId/repos/:repoId/remotes/:remote/check',
+    (request) => {
+      const { user, sessionId, repoId, remote } = parse(RemoteParamsSchema, request.params);
+      return repos.checkRemote(user, sessionId, repoId, remote);
+    },
+  );
+
+  app.delete(
+    '/api/users/:user/sessions/:sessionId/repos/:repoId/remotes/:remote',
+    async (request, reply) => {
+      const { user, sessionId, repoId, remote } = parse(RemoteParamsSchema, request.params);
+      await repos.removeRemote(user, sessionId, repoId, remote);
+      return await reply.status(204).send();
+    },
+  );
+
   app.post('/api/users/:user/sessions/:sessionId/repos/:repoId/fetch', (request) => {
     const { user, sessionId, repoId } = parse(RepoParamsSchema, request.params);
     return repos.fetchRepo(user, sessionId, repoId);
   });
 
-  app.post('/api/compare/directories', async (request) => {
-    const { left, right, user, sessionId } = parse(DirectoryCompareRequestSchema, request.body);
-    const [l, r] = await Promise.all([
-      repos.resolve(left, user, sessionId),
-      repos.resolve(right, user, sessionId),
-    ]);
-    const result = await compareDirectories(l.root, r.root, {
-      leftLabel: l.label,
-      rightLabel: r.label,
-      ignoreAtRoot: { left: l.ignore, right: r.ignore },
-    });
-    if (l.snapshot) result.leftSnapshot = { commit: l.snapshot.commit, ref: l.snapshot.ref };
-    if (r.snapshot) result.rightSnapshot = { commit: r.snapshot.commit, ref: r.snapshot.ref };
-    if (l.snapshot && r.snapshot) {
-      try {
-        annotateRenames(result.root, await snapshots.renames(l.snapshot, r.snapshot));
-      } catch (err) {
-        // Renames are extra information; the comparison itself stands without them.
-        request.log.warn({ err }, 'rename detection failed');
-      }
-    }
-    if (
-      user !== undefined &&
-      user !== '' &&
-      sessionId !== undefined &&
-      sessionId !== '' &&
-      store.getSession(user, sessionId) !== undefined
-    ) {
-      store.recordComparison(sessionId, { left, right, leftLabel: l.label, rightLabel: r.label });
-    }
-    return result;
+  app.post('/api/git/log', async (request, reply): Promise<GitLog> => {
+    const body = parse(GitLogRequestSchema, request.body);
+    const include = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    const exclude =
+      body.exclude === undefined
+        ? undefined
+        : await repos.resolveSnapshot(body.exclude, body.user, body.sessionId);
+    const page = await readLog(git, include, exclude, body, abortOnDisconnect(reply));
+    return {
+      include: revisionOf(include),
+      ...(exclude === undefined ? {} : { exclude: revisionOf(exclude) }),
+      ...page,
+    };
   });
 
-  app.post('/api/snapshot/file-diff', async (request, reply) => {
-    const body = parse(SnapshotFileDiffRequestSchema, request.body);
-    const [l, r] = await Promise.all([
+  app.post('/api/git/show', async (request, reply) => {
+    const body = parse(GitShowRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await patches.patch(snapshot, snapshot.commit, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/resolve', async (request): Promise<GitResolve> => {
+    const body = parse(GitResolveRequestSchema, request.body);
+    const snapshots = await Promise.all(
+      body.sources.map((source) => repos.resolveSnapshot(source, body.user, body.sessionId)),
+    );
+    return { revisions: snapshots.map(revisionOf) };
+  });
+
+  app.post('/api/git/merge-base', async (request, reply): Promise<GitMergeBase> => {
+    const body = parse(GitMergeBaseRequestSchema, request.body);
+    const [a, b] = await Promise.all([
+      repos.resolveSnapshot(body.a, body.user, body.sessionId),
+      repos.resolveSnapshot(body.b, body.user, body.sessionId),
+    ]);
+    return { commit: await primitives.mergeBase(a, b, abortOnDisconnect(reply)) };
+  });
+
+  app.post('/api/git/ancestry', async (request, reply): Promise<GitAncestry> => {
+    const body = parse(GitAncestryRequestSchema, request.body);
+    const tip = await repos.resolveSnapshot(body.tip, body.user, body.sessionId);
+    return { results: await primitives.ancestry(tip, body.commits, abortOnDisconnect(reply)) };
+  });
+
+  app.post('/api/git/blame', async (request, reply): Promise<GitBlame> => {
+    const body = parse(GitBlameRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    const blame = await primitives.blame(snapshot, body.path, body.lines, abortOnDisconnect(reply));
+    return { path: body.path, commit: snapshot.commit, ...blame };
+  });
+
+  app.post('/api/git/diff', async (request, reply): Promise<GitDiff> => {
+    const body = parse(GitDiffRequestSchema, request.body);
+    const [left, right] = await Promise.all([
       repos.resolveSnapshot(body.left, body.user, body.sessionId),
       repos.resolveSnapshot(body.right, body.user, body.sessionId),
     ]);
-    return await snapshots.fileDiff(
-      l,
-      r,
-      {
-        leftPath: body.leftPath,
-        rightPath: body.rightPath,
-        isFullFile: body.fullFile,
-        isAttributed: body.attribute,
-      },
+    const files = await primitives.diff(
+      left,
+      right,
+      body.files,
+      body.fullFile,
       abortOnDisconnect(reply),
     );
+    return { files };
   });
 
-  app.post('/api/upstream/commits', async (request, reply): Promise<UpstreamCommitList> => {
-    const body = parse(UpstreamCommitsRequestSchema, request.body);
-    const [up, down] = await Promise.all([
-      repos.resolveSnapshot(body.upstream, body.user, body.sessionId),
-      repos.resolveSnapshot(body.downstream, body.user, body.sessionId),
+  app.post('/api/git/merge-tree', async (request, reply): Promise<GitMergeTree> => {
+    const body = parse(GitMergeTreeRequestSchema, request.body);
+    const [ours, theirs] = await Promise.all([
+      repos.resolveSnapshot(body.ours, body.user, body.sessionId),
+      repos.resolveSnapshot(body.theirs, body.user, body.sessionId),
     ]);
-    const { commits, hasMore } = await upstream.commits(up, down, body, abortOnDisconnect(reply));
+    const base =
+      body.base === undefined
+        ? undefined
+        : await repos.resolveSnapshot(body.base, body.user, body.sessionId);
+    const merge = await primitives.mergeTree(ours, theirs, base, abortOnDisconnect(reply));
+    return { ours: revisionOf(ours), theirs: revisionOf(theirs), ...merge };
+  });
+
+  app.post('/api/git/patch-equivalents', async (request, reply): Promise<GitPatchEquivalents> => {
+    const body = parse(GitPatchEquivalentsRequestSchema, request.body);
+    const [left, right] = await Promise.all([
+      repos.resolveSnapshot(body.left, body.user, body.sessionId),
+      repos.resolveSnapshot(body.right, body.user, body.sessionId),
+    ]);
+    const exclude =
+      body.exclude === undefined
+        ? undefined
+        : await repos.resolveSnapshot(body.exclude, body.user, body.sessionId);
+    const commits = await primitives.patchEquivalents(
+      left,
+      right,
+      exclude,
+      abortOnDisconnect(reply),
+    );
     return {
-      upstream: { commit: up.commit, ref: up.ref },
-      downstream: { commit: down.commit, ref: down.ref },
-      upstreamLabel: up.label,
-      downstreamLabel: down.label,
+      left: revisionOf(left),
+      right: revisionOf(right),
+      ...(exclude === undefined ? {} : { exclude: revisionOf(exclude) }),
       commits,
-      hasMore,
     };
   });
 
-  app.post('/api/upstream/applicability', async (request, reply) => {
-    const body = parse(ApplicabilityRequestSchema, request.body);
-    const [up, down] = await Promise.all([
-      repos.resolveSnapshot(body.upstream, body.user, body.sessionId),
-      // Checked out so that, in a blob-less clone, downstream's file contents are local.
-      repos.resolveSnapshot(body.downstream, body.user, body.sessionId, { shouldCheckOut: true }),
+  app.post('/api/git/compare-trees', async (request, reply): Promise<GitCompareTrees> => {
+    const body = parse(GitCompareTreesRequestSchema, request.body);
+    const [left, right] = await Promise.all([
+      repos.resolveSnapshot(body.left, body.user, body.sessionId),
+      repos.resolveSnapshot(body.right, body.user, body.sessionId),
     ]);
-    return await upstream.applicability(up, down, body.commit, abortOnDisconnect(reply));
-  });
-
-  app.post('/api/upstream/patch', async (request, reply) => {
-    const body = parse(CommitPatchRequestSchema, request.body);
-    const up = await repos.resolveSnapshot(body.upstream, body.user, body.sessionId);
-    return await upstream.patch(up, body.commit, abortOnDisconnect(reply));
-  });
-
-  app.get('/api/compare/files', async (request, reply) => {
-    const parsed = FileCompareQuerySchema.safeParse(request.query);
-    if (!parsed.success) return await reply.status(400).send({ message: zodMessage(parsed.error) });
-    const { left, right } = parsed.data;
-
-    const [l, r] = await Promise.all([
-      left === undefined ? undefined : readFileForDiff(left, maxTextFileBytes),
-      right === undefined ? undefined : readFileForDiff(right, maxTextFileBytes),
-    ]);
-    const result: FileCompareResult = {
-      identical: left !== undefined && right !== undefined && (await filesEqual(left, right)),
-    };
-    if (l) result.left = l;
-    if (r) result.right = r;
-    return result;
+    const trees = await primitives.compareTrees(left, right, body.paths, abortOnDisconnect(reply));
+    return { left: revisionOf(left), right: revisionOf(right), ...trees };
   });
 
   if (staticDir !== undefined && staticDir !== '') {

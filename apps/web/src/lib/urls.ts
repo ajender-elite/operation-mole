@@ -3,7 +3,7 @@ import type { DiffTarget } from './attribution.ts';
 import { sourcesSearch } from './sources.ts';
 
 /** The pages inside a session, as URL segments. */
-export type SessionPage = 'folders' | 'file' | 'upstream' | 'commit' | 'commits';
+export type SessionPage = 'folders' | 'file' | 'upstream' | 'commit' | 'commits' | 'log';
 
 /** URL of a session, or of one of its pages. */
 export function sessionPath(user: string, sessionId: string, page?: SessionPage): string {
@@ -21,7 +21,7 @@ export function foldersUrl(
   return `${sessionPath(user, sessionId, 'folders')}${sourcesSearch(left, right)}`;
 }
 
-/** Commit Upstream analysis of two snapshots (Base is upstream, Target downstream). */
+/** Commit Upstream analysis of two snapshots (left is upstream, right downstream). */
 export function upstreamUrl(
   user: string,
   sessionId: string,
@@ -73,13 +73,25 @@ function pinnedParams(file: FileCompareTarget): URLSearchParams {
  * The Commit tab of one commit in a session repository: its details and the changes it makes
  * against its first parent.
  */
+/** A range log: the commits from `top` (latest) down to `bottom` (older), in one tab. */
+export function logUrl(
+  user: string,
+  sessionId: string,
+  repoId: string,
+  top: string,
+  bottom: string,
+): string {
+  const params = new URLSearchParams({ repo: repoId, top, bottom });
+  return `${sessionPath(user, sessionId, 'log')}?${params}`;
+}
+
 export function commitUrl(user: string, sessionId: string, repoId: string, sha: string): string {
   const params = new URLSearchParams({ repo: repoId, commit: sha });
   return `${sessionPath(user, sessionId, 'commit')}?${params}`;
 }
 
 /**
- * The Commit List of one side of a File Compare ('left' is Base, 'right' Target): the commits
+ * The Commit List of one side of a File Compare ('left' is Left, 'right' Right): the commits
  * that make that side diverge, what touches its file, and what accounts for the changes.
  */
 export function commitsUrl(

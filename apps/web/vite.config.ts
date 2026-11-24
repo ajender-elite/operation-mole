@@ -4,7 +4,6 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  // Monaco is large but lazy-loaded only on the file diff page.
   build: { chunkSizeWarningLimit: 4000 },
   server: {
     port: 5180,

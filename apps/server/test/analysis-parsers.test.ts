@@ -7,8 +7,7 @@ import {
   splitFilePatches,
   wholeFileHunk,
 } from '../src/snapshot/diff-parse.ts';
-import { LruCache } from '../src/snapshot/lru-cache.ts';
-import { conflictExcerpts } from '../src/upstream/upstream-analyzer.ts';
+import { LruCache } from '../src/cache/lru-cache.ts';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -177,44 +176,6 @@ describe('commit records', () => {
       '=',
       '<',
     ]);
-  });
-});
-
-describe('conflictExcerpts', () => {
-  it('cuts each conflict with context, merging nearby ones', () => {
-    const text = [
-      'a',
-      'b',
-      '<<<<<<< ours',
-      'x',
-      '=======',
-      'y',
-      '>>>>>>> theirs',
-      'c',
-      '<<<<<<< o',
-      '1',
-      '=======',
-      '2',
-      '>>>>>>> t',
-      'd',
-      'e',
-      'f',
-      'g',
-      'h',
-    ].join('\n');
-    const excerpts = conflictExcerpts('f.txt', text, { context: 1 });
-    expect(excerpts).toHaveLength(1);
-    expect(excerpts[0]).toMatchObject({ path: 'f.txt', startLine: 2 });
-    expect(excerpts[0]?.lines.at(-1)).toBe('d');
-  });
-
-  it('respects the line budget', () => {
-    const text = Array.from(
-      { length: 50 },
-      (_, i) => `<<<<<<<\n${i}\n=======\n>>>>>>>\nsep\nsep\nsep\nsep\nsep\nsep\nsep`,
-    ).join('\n');
-    const lines = conflictExcerpts('f', text, { maxLines: 20 }).flatMap((e) => e.lines);
-    expect(lines.length).toBeLessThanOrEqual(20);
   });
 });
 

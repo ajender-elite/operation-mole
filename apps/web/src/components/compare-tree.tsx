@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
 import { formatBytes } from '../lib/format.ts';
+import { MEDIA, useMediaQuery } from '../lib/media.ts';
 import { rowKey, type TreeRow } from '../lib/tree.ts';
 
 type Side = 'left' | 'right';
@@ -30,8 +31,8 @@ type CompareTreeProps = {
 const presentClass: Record<CompareNode['status'], string> = {
   identical: '',
   modified: 'bg-modified-soft text-modified',
-  'only-left': 'bg-left-soft text-left',
-  'only-right': 'bg-right-soft text-right',
+  'only-left': 'bg-side-left-soft text-side-left',
+  'only-right': 'bg-side-right-soft text-side-right',
   error: 'bg-error-soft text-error',
 };
 
@@ -88,7 +89,7 @@ function Cell({
               tabIndex={-1}
               aria-hidden={primary ? undefined : true}
               aria-label={row.expanded ? 'Collapse' : 'Expand'}
-              className="rounded p-0.5 hover:bg-hover"
+              className="touch-target rounded p-0.5 hover:bg-hover"
               onClick={(e) => {
                 e.stopPropagation();
                 onToggle();
@@ -132,7 +133,7 @@ function Cell({
   );
 }
 
-/** "renamed → new/path (92%)" on the Base side, "← old/path" on the Target side. */
+/** "renamed → new/path (92%)" on the Left side, "← old/path" on the Right side. */
 function RenameNote({ node, side }: { node: CompareNode; side: Side }) {
   const other = side === 'left' ? node.renamedTo : node.renamedFrom;
   if (other === undefined) return null;
@@ -162,7 +163,7 @@ function ActionButton({
       tabIndex={-1}
       title={label}
       aria-label={label}
-      className="rounded p-1 text-muted hover:bg-hover hover:text-ink"
+      className="touch-target rounded p-1 text-muted hover:bg-hover hover:text-ink"
       onClick={(e: MouseEvent) => {
         e.stopPropagation();
         onClick();
@@ -189,6 +190,8 @@ export function CompareTree({
   onExplain,
   highlighted,
 }: CompareTreeProps): JSX.Element {
+  // On a touch screen one tap does what a double-click does on a desktop: open a file, or expand a folder.
+  const isTouch = useMediaQuery(MEDIA.coarse);
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>, row: TreeRow) => {
     const el = e.currentTarget;
     switch (e.key) {
@@ -233,11 +236,16 @@ export function CompareTree({
             data-highlighted={highlighted?.has(node.path) === true ? 'true' : undefined}
             tabIndex={0}
             className={clsx(
-              'group relative grid cursor-default select-none grid-cols-2 border-b border-line/60 outline-none hover:brightness-95 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent dark:hover:brightness-125',
+              'group relative grid cursor-default select-none grid-cols-2 border-b border-line/60 outline-none hover:brightness-95 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent dark:hover:brightness-125 coarse:min-h-10',
               highlighted?.has(node.path) === true && 'shadow-[inset_4px_0_0_var(--color-accent)]',
             )}
             onFocus={(e) => {
               if (e.target === e.currentTarget) onFocusRow?.(node);
+            }}
+            onClick={() => {
+              if (!isTouch) return;
+              if (row.isDirectory) onToggle(node);
+              else onOpen(node);
             }}
             onDoubleClick={() => {
               onOpen(node);
@@ -262,7 +270,7 @@ export function CompareTree({
                 onToggle(node);
               }}
             />
-            <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded bg-surface/95 px-1 shadow-sm group-focus-within:flex group-hover:flex">
+            <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded bg-surface/95 px-1 shadow-sm group-focus-within:flex group-hover:flex coarse:flex">
               {onExplain && node.status !== 'identical' && node.status !== 'error' && (
                 <ActionButton
                   label="Explain difference"

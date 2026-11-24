@@ -9,7 +9,7 @@ import type {
 
 /** A file to diff between two snapshots: one tree entry, or both ends of a rename. */
 export type DiffTarget = {
-  /** Identifies the difference: the Base path, or the Target path for a Target-only file. */
+  /** Identifies the difference: the Left path, or the Right path for a Right-only file. */
   key: string;
   leftPath?: string;
   rightPath?: string;
@@ -23,7 +23,7 @@ const target = (leftPath: string | undefined, rightPath: string | undefined): Di
 
 /**
  * What to diff for a tree entry: the same path on both sides, one side only, or, for a
- * detected rename, the old path in Base against the new path in Target. Undefined for folders.
+ * detected rename, the old path in Left against the new path in Right. Undefined for folders.
  */
 export function diffTarget(node: CompareNode): DiffTarget | undefined {
   if (node.children !== undefined) return undefined;
@@ -50,7 +50,7 @@ export function differingFiles(dir: CompareNode): DiffTarget[] {
   return found;
 }
 
-/** The snapshot a changed line belongs to: removed lines are Base content, added lines Target content. */
+/** The snapshot a changed line belongs to: removed lines are Left content, added lines Right content. */
 export function lineSide(line: DiffLine): SnapshotSide | undefined {
   if (line.kind === 'removed') return 'left';
   if (line.kind === 'added') return 'right';
@@ -60,9 +60,9 @@ export function lineSide(line: DiffLine): SnapshotSide | undefined {
 /** How much of a scope's difference one commit currently accounts for. */
 export type CommitShare = {
   commit: DivergenceCommit;
-  /** Base-only lines attributed to it (from Base history). */
+  /** Left-only lines attributed to it (from Left history). */
   leftLines: number;
-  /** Target-only lines attributed to it (from Target history). */
+  /** Right-only lines attributed to it (from Right history). */
   rightLines: number;
   hunks: number;
   /** Keys of the files it appears in. */

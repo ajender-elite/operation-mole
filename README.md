@@ -11,8 +11,8 @@
 ## What it does
 
 - **Sessions per user:** sign in with a username, then create or reopen a session. Each session keeps its own cloned repos.
-- **Folders:** compare a **Base** and a **Target**, byte for byte. Each side is a git repository (given by its URL, since Base and Target may live on different remotes) and a branch you choose.
-  - Green means only in base, blue means only in target, and orange means different. Identical entries keep the default color, and a folder gets an orange dot when something inside it differs.
+- **Folders:** compare a **Left** and a **Right**, byte for byte, from their git trees. Each side is a git repository (given by its URL, since Left and Right may live on different remotes) and a branch you choose.
+  - Green means only in left, blue means only in right, and orange means different. Identical entries keep the default color, and a folder gets an orange dot when something inside it differs.
   - Folders are listed first, then files, each in natural, case-insensitive order (`file2` before `file10`).
   - OM also explains the differences:
     - each side shows the exact commit it resolved to, and renamed files are linked;
@@ -140,7 +140,7 @@ There are no passwords. Anyone who can reach the app and types your username can
 
 ### Comparing git branches
 
-1. In **Folders**, for each of Base and Target, paste the repository URL and click **Clone**, or pick a repository already in the session. The two sides can use different remotes.
+1. In **Folders**, for each of Left and Right, paste the repository URL and click **Clone**, or pick a repository already in the session. The two sides can use different remotes.
    - Supported URLs: `https://…`, `ssh://…` and `git@host:org/repo.git`.
    - Private repos work if the server machine's git can already reach them (SSH keys or a credential helper). OM never asks for or stores passwords or tokens.
 2. Pick a branch for each side. Nothing is preselected, so you always choose it explicitly.
@@ -162,19 +162,20 @@ How clones work:
 
 ## Configuration
 
-| Variable      | Default                 | Purpose                                                                                                           |
-| ------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `OM_DATA_DIR` | `.data/` in the project | Database and cloned repos. Excluded from git.                                                                     |
-| `API_PORT`    | `5181`                  | API port                                                                                                          |
-| `HOST`        | `127.0.0.1`             | API bind address. The API reads any local path and runs git, so keep it on loopback unless you trust the network. |
+| Variable                                                                          | Default                 | Purpose                                                                                                           |
+| --------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `OM_DATA_DIR`                                                                     | `.data/` in the project | Database and cloned repos. Excluded from git.                                                                     |
+| `API_PORT`                                                                        | `5181`                  | API port                                                                                                          |
+| `HOST`                                                                            | `127.0.0.1`             | API bind address. The API reads any local path and runs git, so keep it on loopback unless you trust the network. |
+| `OM_MAX_SESSIONS_PER_USER`, `OM_MAX_REPOS_PER_SESSION`, `OM_MAX_REMOTES_PER_REPO` | `10`                    | Limits on creating sessions, repos and remotes (enforced on the server).                                          |
+| `OM_CACHE_MAX_MB`                                                                 | `256`                   | Size of the analysis cache per user, in megabytes.                                                                |
 
 ### Where data lives
 
 ```
 .data/
-  om.db                                             users, sessions, repos, recent comparisons
-  users/<user>/sessions/<session>/repos/<repo>/     one clone per repo
-  users/<user>/sessions/<session>/worktrees/<repo>/<branch>/   one checkout per branch
+  users/<user>/user.db                              this user's sessions, repos, remotes and analysis cache
+  users/<user>/sessions/<session>/repos/<repo>/     one clone per repo (all its remotes)
 ```
 
 To start fresh, stop the server and delete `.data/`.
@@ -192,11 +193,13 @@ To start fresh, stop the server and delete `.data/`.
 
 ```
 apps/server        Fastify API. Node runs the TypeScript directly, so there's no build step.
-  src/compare        folder walk, byte comparison, sort order
-  src/files          reads file content for the diff view
-  src/git            git service (clone, branches, worktrees, fetch) and per-session repo manager
-  src/store          SQLite store for users, sessions, repos and recent comparisons
-apps/web           React 19, Vite, Tailwind CSS v4, TanStack Query, React Router, Monaco
+  src/compare        folder rules on git trees, summary counts, sort order
+  src/git-api        git primitives: log, show, blame, diff, merge-tree, compare-trees, patch-equivalents
+  src/git            git service (clone, branches, fetch, locks) and per-session repo manager
+  src/snapshot       file diffs (hunks), renames, ancestry
+  src/cache          analysis cache: memory, then SQLite
+  src/store          SQLite store for users, sessions, repos, remotes and the analysis cache
+apps/web           React 19, Vite, Tailwind CSS v4, TanStack Query, React Router
 packages/shared    API types and zod schemas used by both apps
 ```
 

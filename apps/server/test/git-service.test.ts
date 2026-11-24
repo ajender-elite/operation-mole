@@ -1,8 +1,7 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CompareInputError } from '../src/errors.ts';
 import { GitService, configuredSshCommand, gitEnvironment } from '../src/git/git-service.ts';
@@ -17,8 +16,6 @@ beforeAll(async () => {
   origin = createOrigin(path.join(base, 'origin'));
 });
 afterAll(() => rm(base, { recursive: true, force: true }));
-
-const read = (...parts: string[]) => readFileSync(path.join(...parts), 'utf8');
 
 describe('validateUrl', () => {
   const strict = new GitService();
@@ -150,9 +147,8 @@ describe('repoName', () => {
   });
 });
 
-describe('clone, checkout and fetch', () => {
+describe('clone, resolve and fetch', () => {
   let repoDir: string;
-  const wt = (branch: string) => path.join(base, 'worktrees', encodeURIComponent(branch));
 
   beforeAll(async () => {
     repoDir = path.join(base, 'clone');
@@ -160,73 +156,41 @@ describe('clone, checkout and fetch', () => {
   });
 
   it('lists branches and the default branch', async () => {
-    expect(await service.branches(repoDir)).toEqual({
+    expect(await service.remoteBranches(repoDir, 'origin')).toEqual({
       defaultBranch: 'main',
       branches: ['dev', 'feature/x', 'main'],
     });
   });
 
-  it('checks out a branch into its own folder', async () => {
-    const main = await service.checkout(repoDir, 'main', wt('main'));
-    expect(read(main, 'src', 'app.ts')).toBe('export const v = 1;\n');
-    expect(existsSync(path.join(main, 'src', 'new.ts'))).toBe(false);
-    // A worktree's .git is a file pointing back at the clone.
-    expect(lstatSync(path.join(main, '.git')).isFile()).toBe(true);
-
-    const dev = await service.checkout(repoDir, 'dev', wt('dev'));
-    expect(read(dev, 'src', 'app.ts')).toBe('export const v = 2;\n');
-
-    const feature = await service.checkout(repoDir, 'feature/x', wt('feature/x'));
-    expect(read(feature, 'docs', 'x.md')).toBe('x\n');
-  });
-
-  it('reuses an existing checkout that is up to date', async () => {
-    const first = await service.checkout(repoDir, 'main', wt('main'));
-    const second = await service.checkout(repoDir, 'main', wt('main'));
-    expect(second).toBe(first);
-  });
-
-  // Windows git refuses paths over 260 characters unless core.longpaths is on (nginx needs it).
-  it('checks out files whose full path is longer than 260 characters', async () => {
-    const deep = ['a', 'b', 'c', 'd', 'e'].map((c) => c.repeat(50)).join('/');
-    const rel = `${deep}/long-name-file.txt`;
-    const longOrigin = path.join(base, 'long-origin');
-    mkdirSync(longOrigin);
-    git(longOrigin, 'init', '-q', '-b', 'main');
-    git(longOrigin, 'config', 'core.longpaths', 'true');
-    commit(longOrigin, { [rel]: 'deep\n' }, 'long path');
-
-    const longClone = path.join(base, 'long-clone');
-    await service.clone(pathToFileURL(longOrigin).href, longClone);
-    const checkout = await service.checkout(longClone, 'main', path.join(base, 'long-wt'));
-    expect(path.join(checkout, rel).length).toBeGreaterThan(260);
-    expect(read(checkout, ...rel.split('/'))).toBe('deep\n');
-  });
-
   it('rejects an unknown branch', async () => {
-    await expect(service.checkout(repoDir, 'nope', wt('nope'))).rejects.toThrow(/branch "nope"/i);
+    await expect(service.resolveCommit(repoDir, 'nope', 'origin')).rejects.toThrow(
+      /branch "nope"/i,
+    );
   });
 
   it('picks up new commits and branches only after fetching', async () => {
+    const before = await service.resolveCommit(repoDir, 'main', 'origin');
     commit(origin.dir, { 'src/app.ts': 'export const v = 3;\n' }, 'main moves');
     git(origin.dir, 'checkout', '-q', '-b', 'hotfix');
     commit(origin.dir, { 'fix.txt': 'fix\n' }, 'hotfix');
     git(origin.dir, 'checkout', '-q', 'main');
+    const moved = git(origin.dir, 'rev-parse', 'main');
 
-    // Not fetched yet: the old commit is still checked out.
-    expect(read(await service.checkout(repoDir, 'main', wt('main')), 'src', 'app.ts')).toBe(
-      'export const v = 1;\n',
-    );
+    // Not fetched yet: the branch still resolves to the old commit.
+    expect(await service.resolveCommit(repoDir, 'main', 'origin')).toBe(before);
 
-    expect((await service.fetch(repoDir)).branches).toEqual(['dev', 'feature/x', 'hotfix', 'main']);
-    expect(read(await service.checkout(repoDir, 'main', wt('main')), 'src', 'app.ts')).toBe(
-      'export const v = 3;\n',
-    );
+    expect((await service.fetchRemote(repoDir, 'origin')).branches).toEqual([
+      'dev',
+      'feature/x',
+      'hotfix',
+      'main',
+    ]);
+    expect(await service.resolveCommit(repoDir, 'main', 'origin')).toBe(moved);
   });
 
   it('drops branches deleted on the remote when fetching', async () => {
     git(origin.dir, 'branch', '-q', '-D', 'hotfix');
-    expect((await service.fetch(repoDir)).branches).not.toContain('hotfix');
+    expect((await service.fetchRemote(repoDir, 'origin')).branches).not.toContain('hotfix');
   });
 });
 

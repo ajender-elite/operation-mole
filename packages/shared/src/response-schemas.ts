@@ -1,14 +1,15 @@
 import { z } from 'zod';
 import type {
+  RemoteCheck,
+  FolderComparison,
+  RemoteInfo,
+  ServerInfo,
   ApplicabilityResult,
   CommitInfo,
   CommitPatch,
+  GitLog,
   CompareNode,
-  DirectoryCompareResult,
   EntryInfo,
-  FileCompareResult,
-  FileContent,
-  RecentComparison,
   RepoInfo,
   SessionDetail,
   SessionSummary,
@@ -16,7 +17,6 @@ import type {
   SnapshotInfo,
   UpstreamCommitList,
 } from './api.ts';
-import { SourceSchema } from './schemas.ts';
 
 /*
  * Schemas for API responses, so the web client validates what the network returns instead of
@@ -52,40 +52,6 @@ const SnapshotInfoSchema = z.object({
   ref: z.string(),
 }) satisfies z.ZodType<SnapshotInfo>;
 
-/** `POST /api/compare/directories`. */
-export const DirectoryCompareResultSchema = z.object({
-  left: z.string(),
-  right: z.string(),
-  leftLabel: z.string(),
-  rightLabel: z.string(),
-  root: CompareNodeSchema,
-  summary: z.object({
-    identical: z.number(),
-    modified: z.number(),
-    onlyLeft: z.number(),
-    onlyRight: z.number(),
-    errors: z.number(),
-  }),
-  leftSnapshot: SnapshotInfoSchema.exactOptional(),
-  rightSnapshot: SnapshotInfoSchema.exactOptional(),
-}) satisfies z.ZodType<DirectoryCompareResult>;
-
-const FileContentSchema = z.object({
-  path: z.string(),
-  size: z.number(),
-  sha256: z.string(),
-  binary: z.boolean(),
-  content: z.string().exactOptional(),
-  tooLarge: z.boolean().exactOptional(),
-}) satisfies z.ZodType<FileContent>;
-
-/** `GET /api/compare/files`. */
-export const FileCompareResultSchema = z.object({
-  left: FileContentSchema.exactOptional(),
-  right: FileContentSchema.exactOptional(),
-  identical: z.boolean(),
-}) satisfies z.ZodType<FileCompareResult>;
-
 /** One session, as listed or created. */
 export const SessionSummarySchema = z.object({
   id: z.string(),
@@ -98,9 +64,24 @@ export const SessionSummarySchema = z.object({
 /** `GET /api/users/:user/sessions`. */
 export const SessionSummaryListSchema = z.array(SessionSummarySchema);
 
+/** One remote of a repo. */
+export const RemoteCheckSchema = z.object({
+  reachable: z.boolean(),
+  message: z.string(),
+}) satisfies z.ZodType<RemoteCheck>;
+
+export const RemoteInfoSchema = z.object({
+  name: z.string(),
+  url: z.string(),
+  defaultBranch: z.string(),
+  branches: z.array(z.string()),
+  fetchedAt: z.string(),
+}) satisfies z.ZodType<RemoteInfo>;
+
 /** A cloned repo (add, fetch, and inside session details). */
 export const RepoInfoSchema = z.object({
   id: z.string(),
+  remotes: z.array(RemoteInfoSchema),
   url: z.string(),
   name: z.string(),
   defaultBranch: z.string(),
@@ -108,21 +89,25 @@ export const RepoInfoSchema = z.object({
   fetchedAt: z.string(),
 }) satisfies z.ZodType<RepoInfo>;
 
-const RecentComparisonSchema = z.object({
-  id: z.string(),
-  left: SourceSchema,
-  right: SourceSchema,
-  leftLabel: z.string(),
-  rightLabel: z.string(),
-  comparedAt: z.string(),
-}) satisfies z.ZodType<RecentComparison>;
-
 /** `GET /api/users/:user/sessions/:sessionId`. */
+export const ServerInfoSchema = z.object({
+  git: z.object({ version: z.string() }),
+  access: z.object({
+    protocols: z.array(z.string()),
+    isInteractive: z.boolean(),
+    hasSshAgent: z.boolean(),
+  }),
+  limits: z.object({
+    sessionsPerUser: z.number().int().positive(),
+    reposPerSession: z.number().int().positive(),
+    remotesPerRepo: z.number().int().positive(),
+  }),
+}) satisfies z.ZodType<ServerInfo>;
+
 export const SessionDetailSchema = z.object({
   user: z.string(),
   session: SessionSummarySchema,
   repos: z.array(RepoInfoSchema),
-  recent: z.array(RecentComparisonSchema),
 }) satisfies z.ZodType<SessionDetail>;
 
 const CommitInfoSchema = z.object({
@@ -217,6 +202,116 @@ export const ApplicabilityResultSchema = z.object({
 }) satisfies z.ZodType<ApplicabilityResult>;
 
 /** `POST /api/upstream/patch`. */
+const GitRevisionSchema = z.object({
+  commit: z.string(),
+  ref: z.string(),
+  label: z.string(),
+});
+
+const GitLogFileSchema = z.object({
+  path: z.string(),
+  oldPath: z.string().optional(),
+  additions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  binary: z.boolean(),
+});
+
+/** Response of `POST /api/git/log`. See {@link GitLog}. */
+export const GitLogSchema = z.object({
+  include: GitRevisionSchema,
+  exclude: GitRevisionSchema.optional(),
+  commits: z.array(
+    CommitInfoSchema.extend({
+      parents: z.array(z.string()),
+      body: z.string().optional(),
+      files: z.array(GitLogFileSchema).optional(),
+    }),
+  ),
+  hasMore: z.boolean(),
+  total: z.number().int().nonnegative(),
+  excludeIsAncestor: z.boolean().optional(),
+}) satisfies z.ZodType<GitLog>;
+
+const GitBlameLineSchema = z.object({
+  line: z.number().int().positive(),
+  commit: z.string(),
+  origLine: z.number().int().positive(),
+  origPath: z.string().optional(),
+  boundary: z.boolean(),
+});
+
+const GitTreeLeafSchema = z.object({
+  kind: z.enum(['file', 'symlink', 'submodule']),
+  oid: z.string(),
+  size: z.number().int().nonnegative(),
+});
+
+export const GitResolveSchema = z.object({ revisions: z.array(GitRevisionSchema) });
+export const GitMergeBaseSchema = z.object({ commit: z.string().nullable() });
+export const GitAncestrySchema = z.object({
+  results: z.array(z.object({ commit: z.string(), isAncestor: z.boolean().nullable() })),
+});
+export const GitBlameSchema = z.object({
+  path: z.string(),
+  commit: z.string(),
+  lines: z.array(GitBlameLineSchema),
+  commits: z.array(CommitInfoSchema),
+});
+export const GitDiffSchema = z.object({ files: z.array(SnapshotFileDiffSchema) });
+export const GitPatchEquivalentsSchema = z.object({
+  left: GitRevisionSchema,
+  right: GitRevisionSchema,
+  exclude: GitRevisionSchema.optional(),
+  commits: z.array(
+    z.object({
+      commit: CommitInfoSchema.extend({ parents: z.array(z.string()) }),
+      mark: z.enum(['left', 'right', 'equivalent']),
+    }),
+  ),
+});
+
+export const GitMergeTreeSchema = z.object({
+  ours: GitRevisionSchema,
+  theirs: GitRevisionSchema,
+  base: z.string().nullable(),
+  isClean: z.boolean(),
+  conflictedPaths: z.array(z.string()),
+  conflictedFiles: z.array(z.object({ path: z.string(), text: z.string().nullable() })),
+  changedPaths: z.array(z.string()),
+  messages: z.array(z.string()),
+});
+/** The folder tree of two git sides (`GitCompareTrees.folder`). */
+export const FolderComparisonSchema = z.object({
+  leftLabel: z.string(),
+  rightLabel: z.string(),
+  root: CompareNodeSchema,
+  summary: z.object({
+    identical: z.number(),
+    modified: z.number(),
+    onlyLeft: z.number(),
+    onlyRight: z.number(),
+    errors: z.number(),
+  }),
+  leftSnapshot: SnapshotInfoSchema.exactOptional(),
+  rightSnapshot: SnapshotInfoSchema.exactOptional(),
+}) satisfies z.ZodType<FolderComparison>;
+
+/** `POST /api/git/compare-trees`. */
+export const GitCompareTreesSchema = z.object({
+  left: GitRevisionSchema,
+  right: GitRevisionSchema,
+  entries: z.array(
+    z.object({
+      path: z.string(),
+      status: z.enum(['identical', 'modified', 'only-left', 'only-right']),
+      left: GitTreeLeafSchema.optional(),
+      right: GitTreeLeafSchema.optional(),
+    }),
+  ),
+  renames: z.array(z.object({ from: z.string(), to: z.string(), similarity: z.number() })),
+  folder: FolderComparisonSchema,
+});
+
 export const CommitPatchSchema = z.object({
   commit: z.string(),
   details: CommitInfoSchema.extend({ parents: z.array(z.string()) }),

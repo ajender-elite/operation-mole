@@ -10,7 +10,7 @@ export type Rename = {
 
 /**
  * Marks renamed files in a comparison tree. The tree still pairs entries by path (an old
- * name is only in Base, a new one only in Target); a rename links those two entries
+ * name is only in Left, a new one only in Right); a rename links those two entries
  * through `renamedTo`/`renamedFrom`. Renames whose entries aren't one-sided files are skipped.
  */
 export function annotateRenames(root: CompareNode, renames: readonly Rename[]): void {

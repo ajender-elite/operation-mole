@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { CompareNode, DirectoryCompareResult, SessionDetail } from './api.ts';
+import type { CompareNode, FolderComparison, SessionDetail } from './api.ts';
 import {
-  DirectoryCompareResultSchema,
-  FileCompareResultSchema,
+  FolderComparisonSchema,
   SessionDetailSchema,
   SessionSummaryListSchema,
 } from './response-schemas.ts';
@@ -33,20 +32,19 @@ const tree: CompareNode = {
   ],
 };
 
-const comparison: DirectoryCompareResult = {
-  left: '/l',
-  right: 'C:\\r',
-  leftLabel: '/l',
-  rightLabel: 'repo @ main',
+const comparison: FolderComparison = {
+  leftLabel: 'repo @ main',
+  rightLabel: 'repo @ dev',
   root: tree,
   summary: { identical: 1, modified: 0, onlyLeft: 1, onlyRight: 0, errors: 1 },
+  leftSnapshot: { commit: 'a'.repeat(40), ref: 'main' },
 };
 
 const session = { id: 's1', name: 'One', createdAt: 't', updatedAt: 't', repoCount: 1 };
 
 describe('response schemas', () => {
-  it('accept a nested directory comparison unchanged', () => {
-    expect(DirectoryCompareResultSchema.parse(comparison)).toEqual(comparison);
+  it('accept a nested folder comparison unchanged', () => {
+    expect(FolderComparisonSchema.parse(comparison)).toEqual(comparison);
   });
 
   it('reject an unknown status deep in the tree', () => {
@@ -54,10 +52,10 @@ describe('response schemas', () => {
     const child = broken.root.children?.[0]?.children?.[0];
     if (child === undefined) throw new Error('fixture changed');
     Object.assign(child, { status: 'renamed' });
-    expect(DirectoryCompareResultSchema.safeParse(broken).success).toBe(false);
+    expect(FolderComparisonSchema.safeParse(broken).success).toBe(false);
   });
 
-  it('accept a session detail with git and path sources', () => {
+  it('accept a session detail with its repos and their remotes', () => {
     const detail: SessionDetail = {
       user: 'ana',
       session,
@@ -69,30 +67,19 @@ describe('response schemas', () => {
           defaultBranch: 'main',
           branches: ['main'],
           fetchedAt: 't',
-        },
-      ],
-      recent: [
-        {
-          id: 'c1',
-          left: { type: 'git', repoId: 'r1', branch: 'main' },
-          right: { type: 'path', path: '/x' },
-          leftLabel: 'a @ main',
-          rightLabel: '/x',
-          comparedAt: 't',
+          remotes: [
+            {
+              name: 'origin',
+              url: 'https://example.com/a.git',
+              defaultBranch: 'main',
+              branches: ['main'],
+              fetchedAt: 't',
+            },
+          ],
         },
       ],
     };
     expect(SessionDetailSchema.parse(detail)).toEqual(detail);
-  });
-
-  it('accept file results with one side missing and binary or large files', () => {
-    const result = {
-      identical: false,
-      left: { path: '/a.png', size: 9, sha256: 'x', binary: true },
-      right: { path: '/b.txt', size: 9, sha256: 'y', binary: false, tooLarge: true },
-    };
-    expect(FileCompareResultSchema.parse(result)).toEqual(result);
-    expect(FileCompareResultSchema.parse({ identical: false })).toEqual({ identical: false });
   });
 
   it('reject a response of the wrong shape', () => {

@@ -1,6 +1,7 @@
 import type { DiffHunk, SnapshotFileDiff } from '@om/shared';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { BlameMark } from '../lib/blame.ts';
 import { alignRows } from '../lib/diff-rows.ts';
 import { SnapshotDiffView, type DiffLayout } from './snapshot-diff-view.tsx';
 
@@ -43,6 +44,78 @@ const diff: SnapshotFileDiff = {
     },
   ],
 };
+
+/** The blame of a side: line 1 of the left file was last changed by one commit. */
+const leftBlame = new Map<number, BlameMark>([
+  [
+    1,
+    {
+      sha: 'b-left',
+      subject: 'Last left change',
+      authorName: 'Ada',
+      authorDate: '2026-01-01T00:00:00Z',
+      isShared: false,
+    },
+  ],
+]);
+
+describe('blame markers', () => {
+  const renderWithBlame = (
+    blame: { left?: ReadonlyMap<number, BlameMark> },
+    layout: DiffLayout,
+  ) => {
+    const onOpenCommit = vi.fn();
+    render(
+      <SnapshotDiffView
+        diff={diff}
+        leftLabel="Left"
+        rightLabel="Right"
+        focusedHunk={undefined}
+        focusedLine={undefined}
+        highlightCommit={undefined}
+        layout={layout}
+        onFocusHunk={() => undefined}
+        onFocusLine={() => undefined}
+        onOpenCommit={onOpenCommit}
+        blame={blame}
+      />,
+    );
+    return { onOpenCommit };
+  };
+
+  it('marks the line of a side it blames, context lines included, and opens its commit', () => {
+    const { onOpenCommit } = renderWithBlame({ left: leftBlame }, 'side');
+    const marker = screen.getByRole('button', { name: 'Last change in Left: Last left change' });
+    fireEvent.click(marker);
+    expect(onOpenCommit).toHaveBeenCalledWith('b-left', 'left');
+  });
+
+  it('shows the same marker in the inline view', () => {
+    renderWithBlame({ left: leftBlame }, 'inline');
+    expect(
+      screen.getByRole('button', { name: 'Last change in Left: Last left change' }),
+    ).toBeInTheDocument();
+  });
+
+  it('says a shared commit is shared, with a dashed marker', () => {
+    const shared = new Map<number, BlameMark>([
+      [
+        1,
+        {
+          sha: 'b-left',
+          subject: 'Shared',
+          authorName: 'Ada',
+          authorDate: '2026-01-01T00:00:00Z',
+          isShared: true,
+        },
+      ],
+    ]);
+    renderWithBlame({ left: shared }, 'side');
+    expect(screen.getByRole('button', { name: 'Last change in Left: Shared' })).toHaveClass(
+      'border-dashed',
+    );
+  });
+});
 
 describe('alignRows', () => {
   it('pairs removed and added lines of one change block, row by row', () => {
@@ -101,15 +174,15 @@ describe('SnapshotDiffView layout', () => {
     return { onLayoutChange, onFocusLine };
   };
 
-  it('opens side by side by default, with Base on the left and Target on the right', () => {
+  it('opens side by side by default, with Left on the left and Right on the right', () => {
     renderView(undefined);
     const region = screen.getByRole('region', { name: 'Snapshot diff' });
     expect(screen.getByRole('button', { name: 'Side by side' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
-    expect(within(region).getByRole('columnheader', { name: 'Base' })).toBeInTheDocument();
-    expect(within(region).getByRole('columnheader', { name: 'Target' })).toBeInTheDocument();
+    expect(within(region).getByRole('columnheader', { name: 'Left' })).toBeInTheDocument();
+    expect(within(region).getByRole('columnheader', { name: 'Right' })).toBeInTheDocument();
     expect(screen.getByText('app @ main (aaaaaaa)')).toBeInTheDocument();
     expect(screen.getByText('app @ dev (bbbbbbb)')).toBeInTheDocument();
   });
@@ -123,7 +196,7 @@ describe('SnapshotDiffView layout', () => {
   it('renders the inline layout as one list with +/- markers', () => {
     renderView('inline');
     const region = screen.getByRole('region', { name: 'Snapshot diff' });
-    expect(within(region).queryByRole('columnheader', { name: 'Base' })).not.toBeInTheDocument();
+    expect(within(region).queryByRole('columnheader', { name: 'Left' })).not.toBeInTheDocument();
     expect(region.querySelectorAll('[data-kind="added"]')).toHaveLength(3);
     expect(region.querySelectorAll('[data-kind="removed"]')).toHaveLength(2);
   });

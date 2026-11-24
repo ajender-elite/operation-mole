@@ -17,6 +17,8 @@ const staticDir = config.isProduction && existsSync(webDist) ? webDist : undefin
 const app = buildApp({
   logger: true,
   dataDir: config.dataDir,
+  limits: config.limits,
+  cacheMaxBytes: config.cacheMaxBytes,
   ...(staticDir === undefined ? {} : { staticDir }),
 });
 

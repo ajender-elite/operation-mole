@@ -1,18 +1,36 @@
 import type {
-  ApplicabilityRequest,
   ApplicabilityResult,
   CommitPatch,
+  GitAncestry,
+  GitLog,
+  GitResolve,
+  GitSource,
   UpstreamCommit,
-  UpstreamCommitList,
-  UpstreamCommitsRequest,
 } from '@om/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { USER, repoInfo, sessionDetailHandler } from '../test/handlers.ts';
 import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
+import type { UpstreamPair } from '../lib/upstream.ts';
+
+// Applicability is composed in the browser (lib/applicability.test.ts covers how); here it is answered per commit.
+const applied = vi.hoisted(() => ({
+  requests: [] as Array<{ commit: string; upstream: GitSource; downstream: GitSource }>,
+  answers: new Map<string, ApplicabilityResult>(),
+}));
+
+vi.mock('../lib/applicability.ts', () => ({
+  loadApplicability: (pinned: UpstreamPair, commit: string) => {
+    applied.requests.push({ commit, upstream: pinned.upstream, downstream: pinned.downstream });
+    const answer = applied.answers.get(commit);
+    return answer === undefined
+      ? Promise.reject(new Error(`no answer for ${commit}`))
+      : Promise.resolve(answer);
+  },
+}));
 
 const UP_TIP = 'a'.repeat(40);
 const DOWN_TIP = 'd'.repeat(40);
@@ -88,34 +106,56 @@ const results: Record<string, ApplicabilityResult> = {
   [sha(4)]: { ...base(4), status: 'represented', reason: 'reachable' },
 };
 
-let listRequests: UpstreamCommitsRequest[];
-let applyRequests: ApplicabilityRequest[];
+let listRequests: Array<{ limit: number; hideReachable: boolean; firstParent: boolean }>;
 
 beforeEach(() => {
   listRequests = [];
-  applyRequests = [];
+  applied.requests = [];
+  applied.answers = new Map(Object.entries(results));
   server.use(
     sessionDetailHandler({ repos: [repoInfo({ branches: ['main', 'product'] })] }),
-    http.post('*/api/upstream/commits', async ({ request }) => {
-      const body = (await request.json()) as UpstreamCommitsRequest;
-      listRequests.push(body);
-      const list: UpstreamCommitList = {
-        upstream: { commit: UP_TIP, ref: 'main' },
-        downstream: { commit: DOWN_TIP, ref: 'product' },
-        upstreamLabel: 'app @ main',
-        downstreamLabel: 'app @ product',
-        commits:
-          body.hideReachable === true ? commits.filter((c) => !c.reachableFromDownstream) : commits,
-        hasMore: false,
+    http.post('*/api/git/resolve', () =>
+      HttpResponse.json<GitResolve>({
+        revisions: [
+          { commit: UP_TIP, ref: 'main', label: 'app @ main' },
+          { commit: DOWN_TIP, ref: 'product', label: 'app @ product' },
+        ],
+      }),
+    ),
+    http.post('*/api/git/log', async ({ request }) => {
+      const body = (await request.json()) as {
+        exclude?: unknown;
+        limit: number;
+        skip: number;
+        firstParent: boolean;
       };
-      return HttpResponse.json(list);
+      // The window is the commits upstream has; with downstream's excluded when they are hidden.
+      listRequests.push({
+        limit: body.limit,
+        hideReachable: body.exclude !== undefined,
+        firstParent: body.firstParent,
+      });
+      const range =
+        body.exclude === undefined ? commits : commits.filter((c) => !c.reachableFromDownstream);
+      const page = range.slice(body.skip, body.skip + body.limit);
+      return HttpResponse.json<GitLog>({
+        include: { commit: UP_TIP, ref: 'main', label: 'app @ main' },
+        exclude: { commit: DOWN_TIP, ref: 'product', label: 'app @ product' },
+        commits: page,
+        hasMore: body.skip + page.length < range.length,
+        total: range.length,
+      });
     }),
-    http.post('*/api/upstream/applicability', async ({ request }) => {
-      const body = (await request.json()) as ApplicabilityRequest;
-      applyRequests.push(body);
-      return HttpResponse.json(results[body.commit]);
+    http.post('*/api/git/ancestry', async ({ request }) => {
+      const body = (await request.json()) as { commits: string[] };
+      return HttpResponse.json<GitAncestry>({
+        results: body.commits.map((c) => ({
+          commit: c,
+          isAncestor: commits.some((x) => x.sha === c && x.reachableFromDownstream),
+        })),
+      });
     }),
-    http.post('*/api/upstream/patch', () =>
+    http.post('*/api/git/show', () =>
       HttpResponse.json<CommitPatch>({
         commit: sha(2),
         details: {
@@ -184,10 +224,10 @@ describe('UpstreamPage', () => {
       within(summary()).getByRole('button', { name: /conflicting apply.*1/i }),
     ).toBeInTheDocument();
     expect(listRequests[0]).toMatchObject({ limit: 20, hideReachable: false, firstParent: false });
-    expect(applyRequests.map((r) => r.commit).sort()).toEqual([sha(1), sha(2), sha(3), sha(4)]);
+    expect(applied.requests.map((r) => r.commit).sort()).toEqual([sha(1), sha(2), sha(3), sha(4)]);
     // Every evaluation targets the exact downstream commit the window was computed for.
-    expect(new Set(applyRequests.map((r) => r.downstream.branch))).toEqual(new Set([DOWN_TIP]));
-    expect(new Set(applyRequests.map((r) => r.upstream.branch))).toEqual(new Set([UP_TIP]));
+    expect(new Set(applied.requests.map((r) => r.downstream.branch))).toEqual(new Set([DOWN_TIP]));
+    expect(new Set(applied.requests.map((r) => r.upstream.branch))).toEqual(new Set([UP_TIP]));
   });
 
   it('explains a conflict without claiming the change is missing, with the evidence', async () => {

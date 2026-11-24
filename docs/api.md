@@ -36,13 +36,12 @@ interface SessionDetail {
   user: string;
   session: SessionSummary;
   repos: RepoInfo[];
-  recent: RecentComparison[]; // newest first, at most 20
 }
 ```
 
 ### `DELETE /api/users/:user/sessions/:sessionId`
 
-Deletes the session, its repos and recent comparisons, and its folder on disk. Returns **204**, or **404**.
+Deletes the session, its repos, and its folder on disk. Returns **204**, or **404**.
 
 ## Repositories
 
@@ -60,205 +59,118 @@ Body: `{ "url": string }`. Clones the repo into the session, or returns the exis
 ```ts
 interface RepoInfo {
   id: string;
-  url: string;
+  url: string; // the first remote's (origin's) URL
   name: string; // last path segment without .git
+  defaultBranch: string; // the first remote's
+  branches: string[]; // the first remote's, sorted like file names
+  fetchedAt: string; // the first remote's: cloned or last fetched
+  remotes: RemoteInfo[]; // every remote, origin first
+}
+
+interface RemoteInfo {
+  name: string; // a slug (^[a-z0-9][a-z0-9_-]{0,39}$), unique within the repo
+  url: string; // unique within the repo
   defaultBranch: string;
-  branches: string[]; // sorted like file names
-  fetchedAt: string; // cloned or last fetched
+  branches: string[];
+  fetchedAt: string;
 }
 ```
+
+A repo has one or more remotes. The first one, `origin`, is the URL the repo was cloned from; removing it leaves the repo listed under its other remotes.
 
 ### `POST /api/users/:user/sessions/:sessionId/repos/:repoId/fetch`
 
-Fetches every branch from the remote: new commits and new branches are added, and branches deleted on the remote are removed. The default branch is updated too. Returns the updated `RepoInfo`. Checkouts move to the new commits the next time they're compared.
+Fetches every remote of the repo: new commits and new branches are added, and branches deleted on a remote are removed. Each remote's default branch is updated too. Returns the updated `RepoInfo`. Checkouts move to the new commits the next time they're compared.
 
-## Comparing
+### `DELETE /api/users/:user/sessions/:sessionId/repos/:repoId`
 
-### `POST /api/compare/directories`
+Removes a repo from the session: its clone is deleted first, then its row (so a failed disk delete leaves the repo listed, to retry). Answers 204, or 404 when the repo is not in the session. The repos in a session are limited (see below); deleting one frees its place.
 
-```ts
-type Source =
-  | { type: 'path'; path: string } // absolute path
-  | { type: 'git'; repoId: string; branch: string }; // branch, tag, or (abbreviated) commit SHA
+### `POST /api/users/:user/sessions/:sessionId/repos/:repoId/remotes`
 
-interface Body {
-  left: Source | string; // a bare absolute path is shorthand for a path source
-  right: Source | string;
-  user?: string; // required for git sources; with sessionId, records the comparison
-  sessionId?: string;
-}
-```
+Body: `{ "name": string, "url": string }`. Adds another place the repo lives (a fork, a mirror) under its own name, and fetches it. The new remote's branches are available as `GitSource.remote` on the git primitives.
 
-Returns a `DirectoryCompareResult`:
+| Result                                                                                                      | Status |
+| ----------------------------------------------------------------------------------------------------------- | ------ |
+| Added and fetched; returns the updated `RepoInfo`                                                           | 201    |
+| Invalid name or URL                                                                                         | 400    |
+| Name already used in the repo, URL already used in the repo, or the `OM_MAX_REMOTES_PER_REPO` limit reached | 409    |
+| Session or repo not found                                                                                   | 404    |
 
-```ts
-interface DirectoryCompareResult {
-  left: string; // absolute root that was compared (a worktree folder for git sources)
-  right: string;
-  leftLabel: string; // the path, or "repo @ branch"
-  rightLabel: string;
-  root: CompareNode;
-  summary: {
-    identical: number;
-    modified: number;
-    onlyLeft: number;
-    onlyRight: number;
-    errors: number;
-  };
-  leftSnapshot?: { commit: string; ref: string }; // git sides: the exact commit compared
-  rightSnapshot?: { commit: string; ref: string };
-}
+### `POST /api/users/:user/sessions/:sessionId/repos/:repoId/remotes/:remote/fetch`
 
-interface CompareNode {
-  name: string; // '' for the root
-  path: string; // POSIX path relative to the roots, '' for the root
-  status: 'identical' | 'modified' | 'only-left' | 'only-right' | 'error';
-  left?: EntryInfo; // present if the entry exists on that side
-  right?: EntryInfo;
-  children?: CompareNode[]; // present for folders, already sorted
-  error?: string;
-  renamedTo?: string; // only-left file git detected as renamed (git sides only)
-  renamedFrom?: string; // only-right file git detected as renamed
-  similarity?: number; // rename similarity, percent
-}
+Fetches one remote, leaving the others as they are. Returns the updated `RepoInfo`. **404** when the repo has no remote with that name.
 
-interface EntryInfo {
-  kind: 'file' | 'directory' | 'symlink';
-  size: number;
-  mtimeMs: number;
-  linkTarget?: string;
-}
-```
+### `DELETE /api/users/:user/sessions/:sessionId/repos/:repoId/remotes/:remote`
 
-Errors:
+Removes a remote: its configuration, its branches and its tags (`refs/remotes/<name>/` and `refs/remote-tags/<name>/`), then prunes the objects only it used. Answers 204. **404** for a remote the repo does not have. **409** for the repo's last remote: to drop that, remove the repository.
 
-- **400**: invalid body, a missing root or one that isn't a folder, a git source without a session, an unknown branch.
-- **404**: unknown session, or a repo that isn't in the session.
+### `GET /api/server`
 
-What each status means is covered in [comparison rules](comparison-rules.md).
+What the server's git can do and how it reaches remotes. Response: `{ git: { version }, access: { protocols, isInteractive, hasSshAgent }, limits: { sessionsPerUser, reposPerSession, remotesPerRepo } }`. `version` is what `git --version` prints. `protocols` are the URL schemes git may use. `isInteractive` is always `false`: git never prompts. `hasSshAgent` says whether `SSH_AUTH_SOCK` is set. The response never carries a URL, a credential or an environment value.
 
-### `GET /api/compare/files?left=<abs>&right=<abs>`
+### Limits
 
-At least one side is required.
+The server enforces three limits, set by `OM_MAX_SESSIONS_PER_USER`, `OM_MAX_REPOS_PER_SESSION` and `OM_MAX_REMOTES_PER_REPO` (each a whole number, default 10). Creating a session or adding a repo past its limit answers **409** and creates nothing. Adding a repo that the session already has answers 200 with that repo, since it adds nothing. Data already over a limit is never deleted; only new creation is refused. The limit check and the write happen together: sessions in one transaction, repos under a lock per session.
 
-```ts
-interface FileCompareResult {
-  left?: FileContent;
-  right?: FileContent;
-  identical: boolean; // both present and byte-for-byte equal
-}
+At startup the server removes folders that no row names (a repo or session left behind by a crash or an interrupted delete). A folder that is still held (on Windows) stays until the next start.
 
-interface FileContent {
-  path: string;
-  size: number;
-  sha256: string;
-  binary: boolean; // NUL byte in the first 8 KB
-  content?: string; // text files up to 5 MB
-  tooLarge?: boolean; // text file over the limit
-}
-```
+## Folder comparison and git primitives
 
-Returns **404** for a missing file, and **400** if a path is a folder.
+Folder Compare is `POST /api/git/compare-trees`, below. The rest are the git primitives: small, git-like endpoints that the frontend composes into its views (file diffs, attribution, applicability and commit windows are all composed there from these).
 
-## Snapshot analysis
+Small, git-like endpoints that the frontend composes into its views. They take a `GitSource` (repository, a remote, and a branch, tag or commit), never free-form git arguments, and echo the commits they resolved. `remote` names one of the repo's remotes and defaults to `origin`. Two sides may name different remotes of one repo, which is how a fork and its upstream are compared without two clones. An unknown remote answers **400**.
 
-These need git sources on both sides and a session (`user`, `sessionId` in the body). Results describe exact commits and are cached by SHA. A client that disconnects cancels the git work.
+### `POST /api/git/log`
 
-### `POST /api/snapshot/file-diff`
+`git log source ^exclude`: the commits reachable from `source` and not from `exclude`, newest first, one page at a time. Body (besides `user` and `sessionId`): `source`, optional `exclude`, optional `paths` (literal paths), `firstParent`, `since` (`YYYY-MM-DD`), `limit` (1–200, default 50), `skip`, `withBody` (the full message), `withStats` (changed files with additions, deletions, renames and binary marks).
 
-Body: `{ left: GitSource, right: GitSource, user, sessionId, leftPath?, rightPath?, fullFile?, attribute? }`. Give both paths for a modified or renamed file, one for a one-sided file. `attribute` (default `true`) runs `git blame` on the changed lines; `false` returns the same hunks with no commits, which is cheaper and what the UI shows before the user asks for an explanation. Paths are POSIX, relative, without `.`/`..`, and read literally (no pathspec magic).
+Response: `{ include, exclude?, commits, hasMore, total }`. `total` counts the whole range; `hasMore` says whether another page exists. The excluded commit itself is not in `commits`; a caller that wants a range to end at it shows it as the last entry.
 
-```ts
-interface SnapshotFileDiff {
-  leftCommit: string;
-  rightCommit: string;
-  leftPath?: string;
-  rightPath?: string;
-  content: 'text' | 'identical' | 'binary' | 'too-large';
-  hunks: DiffHunk[]; // git's hunks, Base → Target (3 lines of context, or the whole file)
-  commits: DivergenceCommit[]; // every commit a line points to
-  attributionNote?: string; // e.g. git blame failed on one side
-  truncated?: boolean; // more than 20,000 lines
-}
-interface DiffHunk {
-  header: string; // "@@ -a,b +c,d @@ …"
-  leftStart: number;
-  leftCount: number;
-  rightStart: number;
-  rightCount: number;
-  lines: Array<{
-    kind: 'context' | 'removed' | 'added';
-    text: string;
-    leftLine?: number; // context and removed
-    rightLine?: number; // context and added
-    commit?: string; // git blame on the line's own side (removed: Base, added: Target)
-  }>;
-}
-interface DivergenceCommit {
-  sha: string;
-  subject: string;
-  authorName: string;
-  authorEmail: string;
-  authorDate: string; // %aI
-  committerName: string;
-  committerEmail: string;
-  commitDate: string; // %cI
-  inLeft: boolean | null; // reachable from the Base snapshot (null: unknown)
-  inRight: boolean | null;
-}
-```
+### `POST /api/git/show`
 
-**404** for a path missing from its snapshot; **400** for a bad path or a non-file (e.g. a submodule).
+One commit's metadata, parents and changed files with hunks, against its first parent. Body: `source`. Response: `{ commit, details, baseParent?, files, truncated }`, where `details` is the commit's metadata with its `parents` (first parent first) and `files` has `oldPath`, `newPath`, `status`, `binary` and `hunks`.
 
-## Upstream applicability
+### `POST /api/git/resolve`
 
-`upstream` is the snapshot whose commits are examined (Base), `downstream` the one they are applied to (Target).
+The commit each revision names. Body: `sources` (1 to 20 git sources). Response: `{ revisions: [{ commit, ref, label }] }`. Unknown revisions answer 400.
 
-### `POST /api/upstream/commits`
+### `POST /api/git/merge-base`
 
-Body: `{ upstream, downstream, user, sessionId, limit = 20 (1–200), since?: 'YYYY-MM-DD', firstParent = false, hideReachable = false }`. `since` is `git log --since` (commit date, from the start of that day in server time). `hideReachable` lists `upstream ^downstream`. `paths` (up to 100 literal repository paths) keeps only the commits that changed at least one of them (`git log -- paths`, read literally, never as pathspec patterns). The filter is generic: any client can ask for any path, and the UI composes its lists from these answers.
+The best common ancestor of two revisions. Body: `a`, `b`. Response: `{ commit }`, where `commit` is null when the histories share none.
 
-```ts
-interface UpstreamCommitList {
-  upstream: { commit: string; ref: string };
-  downstream: { commit: string; ref: string };
-  upstreamLabel: string;
-  downstreamLabel: string;
-  commits: Array<CommitInfo & { parents: string[]; reachableFromDownstream: boolean }>;
-  hasMore: boolean; // more commits match than `limit`
-}
-```
+### `POST /api/git/ancestry`
 
-### `POST /api/upstream/applicability`
+Whether each commit is in the history of `tip`. Body: `tip` and `commits` (1 to 200 full SHAs, looked up in the tip's repository). Response: `{ results: [{ commit, isAncestor }] }`. `isAncestor` is null when git cannot tell (for example, the commit is not in that repository).
 
-Body: `{ upstream, downstream, user, sessionId, commit }` (a full SHA). Applies that commit alone to the downstream commit. See [investigation model](investigation-model.md#applicability-states) for what each status means.
+### `POST /api/git/blame`
 
-```ts
-interface ApplicabilityResult {
-  commit: string;
-  downstreamCommit: string;
-  status: 'clean' | 'represented' | 'conflict' | 'unknown';
-  reason:
-    'reachable' | 'equivalent-patch' | 'no-effective-change' | 'applies' | 'conflict' | 'error';
-  baseParent?: string; // first parent; absent for a root commit
-  isMerge: boolean;
-  files: Array<{
-    path: string;
-    oldPath?: string;
-    outcome: 'applies' | 'already-present' | 'conflict';
-  }>;
-  equivalentCommits: CommitInfo[]; // same patch-id, downstream only
-  conflicts: Array<{ path: string; startLine: number; lines: string[] }>; // marker excerpts
-  messages: string[]; // git's, e.g. "CONFLICT (content): Merge conflict in x"
-  detail?: string;
-}
-```
+Who last changed each line of a file at a commit. Body: `source`, `path`, and optional `lines` (only those lines). Response: `{ path, commit, lines, commits }`. Each line has `line`, `commit`, `origLine` (its line in that commit), `origPath` (only when the file was renamed), and `boundary`. `commits` holds each attributed commit's metadata. A path that is not a file at that commit answers 404 (or 400 for a folder).
 
-**404** when the commit isn't in the upstream repository.
+### `POST /api/git/diff`
 
-### `POST /api/upstream/patch`
+The hunks for pairs of file paths, Left → Right, with no attribution. Body: `left`, `right`, `files` (1 to 50 pairs of `leftPath` and/or `rightPath`), and `fullFile`. Response: `{ files }`, one diff per pair in the `SnapshotFileDiff` shape (its `commits` is empty).
 
-Body: `{ upstream, user, sessionId, commit }`. The commit's own metadata as `details` (`CommitDetails`: `CommitInfo` plus `parents`, first parent first), and its files and hunks against its first parent (`CommitPatch`: `files[]` with `oldPath`, `newPath`, `status`, `binary`, `hunks`; `truncated`).
+### `POST /api/git/merge-tree`
+
+Whether `theirs` merges cleanly into `ours`, computed in a scratch object store that is removed afterwards (no ref, index or worktree is touched). Body: `ours`, `theirs`, and optional `base` (their merge base by default). Response: `{ ours, theirs, base, isClean, conflictedPaths, conflictedFiles, changedPaths, messages }`. `conflictedFiles` holds the merged text, with its conflict markers, of the first 10 conflicted files (`text` is `null` for binary files, and a file that is absent from the result, such as a modify/delete conflict, is left out). `changedPaths` lists the paths whose content the merge changes relative to `ours`, which is what applying `theirs` here would change. Two histories with no common ancestor answer 400.
+
+### `POST /api/git/patch-equivalents`
+
+The commits on each side of `left...right` (after `exclude`, when given), newest first, each marked `left` or `right` by side. A commit that makes the same change as a commit on the other side (`git log --cherry-mark`, the same patch-id) is marked `equivalent`. Merge commits are left out. Body: `left`, `right`, and optional `exclude`. Response: `{ left, right, exclude?, commits }`, where each of `commits` is `{ commit, mark }`, and `commit` has the shape of a `log` commit.
+
+### `POST /api/git/compare-trees`
+
+Every file of two trees with its status, compared by object id (nothing is checked out). Body: `left`, `right`, and optional `paths` (only those paths). Response: `{ left, right, entries, renames, folder }`. `folder` is the tree Folder Compare shows: `{ leftLabel, rightLabel, root, summary, leftSnapshot, rightSnapshot }`, where `root` is a `CompareNode` tree (folders first, then files, each in natural order), `summary` counts the files by status, and each snapshot is the exact commit a side resolved to. Each entry has `path`, `status` (`identical`, `modified`, `only-left` or `only-right`), and each side's `left`/`right` leaf (`kind`: `file`, `symlink` or `submodule`; `oid`; `size`). Folders are not listed; they follow from the files under them. `renames` lists the files git detects as moved, with their similarity in percent.
+
+## Removed
+
+These were removed; their replacements are in parentheses.
+
+- `POST /api/compare/directories`, `GET /api/compare/files` (Folder Compare reads `POST /api/git/compare-trees`; file diffs read `POST /api/git/diff`).
+- `POST /api/snapshot/file-diff` (`POST /api/git/diff` for the hunks, `POST /api/git/blame` for attribution).
+- `POST /api/upstream/commits`, `…/applicability` and `…/patch` (`POST /api/git/log`, `…/show`, `…/merge-tree`, `…/ancestry` and `…/patch-equivalents`, combined in the browser, see [frontend](frontend.md)).
+- Path sources: every side is a git source. Recent comparisons (`recent` in `SessionDetail`).
 
 ## Other
 

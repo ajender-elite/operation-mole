@@ -1,5 +1,5 @@
-import type { CompareNode, CompareSummary, DirectoryCompareResult, GitSource } from '@om/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { CompareNode, CompareSummary, FolderComparison, GitSource } from '@om/shared';
+import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
   ChevronRight,
@@ -17,6 +17,8 @@ import {
   type AttributionScope,
 } from '../components/attribution-panel.tsx';
 import { CompareForm } from '../components/compare-form.tsx';
+import { Toolbar } from '../components/toolbar.tsx';
+import { Sheet } from '../components/sheet.tsx';
 import { CompareTree } from '../components/compare-tree.tsx';
 import {
   commitFootprint,
@@ -48,7 +50,6 @@ import {
   flattenTree,
   countUnder,
   isDirectory,
-  joinPath,
   type TreeFilter,
 } from '../lib/tree.ts';
 
@@ -56,8 +57,8 @@ const chips: Array<{ key: keyof CompareSummary; filter: TreeFilter; label: strin
   [
     { key: 'identical', filter: 'identical', label: 'Identical', dot: 'bg-muted' },
     { key: 'modified', filter: 'modified', label: 'Different', dot: 'bg-modified-dot' },
-    { key: 'onlyLeft', filter: 'only-left', label: 'Only in base', dot: 'bg-left-dot' },
-    { key: 'onlyRight', filter: 'only-right', label: 'Only in target', dot: 'bg-right-dot' },
+    { key: 'onlyLeft', filter: 'only-left', label: 'Only in left', dot: 'bg-side-left-dot' },
+    { key: 'onlyRight', filter: 'only-right', label: 'Only in right', dot: 'bg-side-right-dot' },
     { key: 'errors', filter: 'error', label: 'Errors', dot: 'bg-error-dot' },
   ];
 
@@ -121,13 +122,13 @@ export function DirectoryComparePage(): JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm">
+      <div className="flex items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm short:py-1">
         <span className="min-w-0 truncate">
-          <span className="text-muted">Base</span>{' '}
-          <span className="font-mono text-left">{sourceLabel(left, repos)}</span>
+          <span className="text-muted">Left</span>{' '}
+          <span className="font-mono">{sourceLabel(left, repos)}</span>
           <span className="px-2 text-muted">↔</span>
-          <span className="text-muted">Target</span>{' '}
-          <span className="font-mono text-right">{sourceLabel(right, repos)}</span>
+          <span className="text-muted">Right</span>{' '}
+          <span className="font-mono">{sourceLabel(right, repos)}</span>
         </span>
       </div>
       <Comparison key={key} left={left} right={right} user={user} sessionId={sessionId} />
@@ -176,7 +177,7 @@ function explained(root: CompareNode, value: string | undefined): CompareNode | 
 function snapshotPair(
   left: GitSource,
   right: GitSource,
-  data: DirectoryCompareResult | undefined,
+  data: FolderComparison | undefined,
   user: string,
   sessionId: string,
 ): SnapshotPair | undefined {
@@ -206,7 +207,6 @@ function highlightPaths(footprint: CommitFootprint, analyzed: AttributionInput):
 
 function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   const [params] = useSearchParams();
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const workspace = useWorkspace();
   const path = params.get('path') ?? '';
@@ -221,7 +221,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
   // Folder statistics are not shown until asked for.
   const [isShowingStats, setShowingStats] = useState(false);
 
-  const query = useQuery(folderCompareQuery(queryClient, user, sessionId, left, right));
+  const query = useQuery(folderCompareQuery(user, sessionId, left, right));
   const data = query.data;
   const pair = useMemo(
     () => snapshotPair(left, right, data, user, sessionId),
@@ -413,120 +413,145 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 text-sm">
-        {isShowingStats ? (
-          <div role="group" aria-label="Summary" className="flex flex-wrap items-center gap-1">
-            {chips.map((chip) =>
-              chip.key === 'errors' && stats.errors === 0 ? null : (
-                <button
-                  key={chip.key}
-                  type="button"
-                  aria-pressed={filter === chip.filter}
-                  title={`Filter to: ${chip.label}`}
-                  onClick={() => {
-                    setFilter(filter === chip.filter ? 'all' : chip.filter);
-                  }}
-                  className={clsx(
-                    'flex items-center gap-1.5 rounded-full border px-2.5 py-0.5',
-                    filter === chip.filter
-                      ? 'border-accent bg-accent-soft'
-                      : 'border-line hover:bg-hover',
-                  )}
+      <div className="border-b border-line bg-surface px-4 py-2 text-sm">
+        <Toolbar
+          items={[
+            {
+              key: 'show',
+              priority: 'primary',
+              node: (
+                <div
+                  role="radiogroup"
+                  aria-label="Show"
+                  className="flex overflow-hidden rounded-md border border-line"
                 >
-                  <span className={clsx('size-2 rounded-full', chip.dot)} aria-hidden />
-                  {chip.label} <span className="font-semibold tabular-nums">{stats[chip.key]}</span>
+                  {(['all', 'differences'] as const).map((f) => (
+                    <label
+                      key={f}
+                      className={clsx(
+                        'cursor-pointer px-2.5 py-0.5',
+                        filter === f ? 'bg-accent-soft text-accent' : 'hover:bg-hover',
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="filter"
+                        className="sr-only"
+                        checked={filter === f}
+                        onChange={() => {
+                          setFilter(f);
+                        }}
+                      />
+                      {f === 'all' ? 'All' : 'Differences only'}
+                    </label>
+                  ))}
+                </div>
+              ),
+            },
+            {
+              key: 'statistics',
+              priority: 'secondary',
+              node: isShowingStats ? (
+                <div
+                  role="group"
+                  aria-label="Summary"
+                  className="flex flex-wrap items-center gap-1"
+                >
+                  {chips.map((chip) =>
+                    chip.key === 'errors' && stats.errors === 0 ? null : (
+                      <button
+                        key={chip.key}
+                        type="button"
+                        aria-pressed={filter === chip.filter}
+                        title={`Filter to: ${chip.label}`}
+                        onClick={() => {
+                          setFilter(filter === chip.filter ? 'all' : chip.filter);
+                        }}
+                        className={clsx(
+                          'flex items-center gap-1.5 rounded-full border px-2.5 py-0.5',
+                          filter === chip.filter
+                            ? 'border-accent bg-accent-soft'
+                            : 'border-line hover:bg-hover',
+                        )}
+                      >
+                        <span className={clsx('size-2 rounded-full', chip.dot)} aria-hidden />
+                        {chip.label}{' '}
+                        <span className="font-semibold tabular-nums">{stats[chip.key]}</span>
+                      </button>
+                    ),
+                  )}
+                  <button
+                    type="button"
+                    className="rounded px-2 py-0.5 text-xs text-muted hover:bg-hover"
+                    onClick={() => {
+                      setShowingStats(false);
+                    }}
+                  >
+                    Hide statistics
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  aria-expanded={false}
+                  className="rounded-full border border-line px-2.5 py-0.5 text-xs text-muted hover:bg-hover"
+                  onClick={() => {
+                    setShowingStats(true);
+                  }}
+                >
+                  Show current directory statistics
                 </button>
               ),
-            )}
-            <button
-              type="button"
-              className="rounded px-2 py-0.5 text-xs text-muted hover:bg-hover"
-              onClick={() => {
-                setShowingStats(false);
-              }}
-            >
-              Hide statistics
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            aria-expanded={false}
-            className="rounded-full border border-line px-2.5 py-0.5 text-xs text-muted hover:bg-hover"
-            onClick={() => {
-              setShowingStats(true);
-            }}
-          >
-            Show current directory statistics
-          </button>
-        )}
-        <div
-          role="radiogroup"
-          aria-label="Show"
-          className="flex overflow-hidden rounded-md border border-line"
-        >
-          {(['all', 'differences'] as const).map((f) => (
-            <label
-              key={f}
-              className={clsx(
-                'cursor-pointer px-2.5 py-0.5',
-                filter === f ? 'bg-accent-soft text-accent' : 'hover:bg-hover',
-              )}
-            >
-              <input
-                type="radio"
-                name="filter"
-                className="sr-only"
-                checked={filter === f}
-                onChange={() => {
-                  setFilter(f);
-                }}
-              />
-              {f === 'all' ? 'All' : 'Differences only'}
-            </label>
-          ))}
-        </div>
-        <div className="ml-auto flex items-center gap-1">
-          {current && (
-            <>
-              <button
-                type="button"
-                className="rounded px-2 py-0.5 text-muted hover:bg-hover"
-                onClick={() => {
-                  setExpanded(new Set(collectDirectoryPaths(current)));
-                }}
-              >
-                Expand all
-              </button>
-              <button
-                type="button"
-                className="rounded px-2 py-0.5 text-muted hover:bg-hover"
-                onClick={() => {
-                  setExpanded(new Set());
-                }}
-              >
-                Collapse all
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-muted hover:bg-hover disabled:opacity-50"
-            disabled={query.isFetching}
-            onClick={() => {
-              void query.refetch();
-            }}
-          >
-            <RefreshCw
-              className={clsx('size-3.5', query.isFetching && 'animate-spin')}
-              aria-hidden
-            />
-            Rescan
-          </button>
-        </div>
+            },
+            {
+              key: 'actions',
+              priority: 'secondary',
+              node: (
+                <div className="ml-auto flex items-center gap-1">
+                  {current && (
+                    <>
+                      <button
+                        type="button"
+                        className="rounded px-2 py-0.5 text-muted hover:bg-hover"
+                        onClick={() => {
+                          setExpanded(new Set(collectDirectoryPaths(current)));
+                        }}
+                      >
+                        Expand all
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded px-2 py-0.5 text-muted hover:bg-hover"
+                        onClick={() => {
+                          setExpanded(new Set());
+                        }}
+                      >
+                        Collapse all
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded px-2 py-0.5 text-muted hover:bg-hover disabled:opacity-50"
+                    disabled={query.isFetching}
+                    onClick={() => {
+                      void query.refetch();
+                    }}
+                  >
+                    <RefreshCw
+                      className={clsx('size-3.5', query.isFetching && 'animate-spin')}
+                      aria-hidden
+                    />
+                    Rescan
+                  </button>
+                </div>
+              ),
+            },
+          ]}
+        />
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-1.5 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-1.5 text-sm short:py-1">
         <nav aria-label="Breadcrumb">
           <ol className="flex flex-wrap items-center gap-1">
             {crumbs.map((crumb, i) => {
@@ -560,7 +585,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
             })}
           </ol>
         </nav>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {canExplainHere && (
             <button
               type="button"
@@ -593,9 +618,7 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
                     'flex min-w-0 gap-1 px-3 py-1 font-mono',
                     side === 'right' && 'border-l border-line',
                   )}
-                  title={
-                    snapshot ? `${label} = ${snapshot.commit}` : joinPath(query.data[side], path)
-                  }
+                  title={snapshot ? `${label} = ${snapshot.commit}` : label}
                 >
                   <span className="truncate">{label}</span>
                   {snapshot && (
@@ -634,34 +657,41 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
         </div>
 
         {isPanelOpen && (
-          <AttributionPanel
-            scope={scope}
-            attribution={attribution}
-            progress={progress}
-            notice={notice}
-            onStart={onStart}
-            error={error}
-            selected={selectedCommit}
-            footprint={footprint}
-            analyzedFiles={analyzed.length}
-            onSelectCommit={(sha) => {
-              setSearch({ commit: sha });
-            }}
-            onOpenFile={(key, hunk) => {
-              const target = allDifferences.find((t) => t.key === key);
-              if (target) {
-                openFileTab(target, {
-                  explain: '1',
-                  hunk: hunk === undefined ? undefined : String(hunk),
-                  commit: commitSha,
-                });
-              }
-            }}
-            commitActions={commitActions}
+          <Sheet
+            title="Explanation"
             onClose={() => {
               setSearch({ explain: undefined, commit: undefined });
             }}
-          />
+          >
+            <AttributionPanel
+              scope={scope}
+              attribution={attribution}
+              progress={progress}
+              notice={notice}
+              onStart={onStart}
+              error={error}
+              selected={selectedCommit}
+              footprint={footprint}
+              analyzedFiles={analyzed.length}
+              onSelectCommit={(sha) => {
+                setSearch({ commit: sha });
+              }}
+              onOpenFile={(key, hunk) => {
+                const target = allDifferences.find((t) => t.key === key);
+                if (target) {
+                  openFileTab(target, {
+                    explain: '1',
+                    hunk: hunk === undefined ? undefined : String(hunk),
+                    commit: commitSha,
+                  });
+                }
+              }}
+              commitActions={commitActions}
+              onClose={() => {
+                setSearch({ explain: undefined, commit: undefined });
+              }}
+            />
+          </Sheet>
         )}
       </div>
     </div>
@@ -670,12 +700,12 @@ function Comparison({ left, right, user, sessionId }: ComparisonProps) {
 
 function Legend() {
   const items = [
-    ['bg-left-dot', 'Only in base'],
-    ['bg-right-dot', 'Only in target'],
+    ['bg-side-left-dot', 'Only in left'],
+    ['bg-side-right-dot', 'Only in right'],
     ['bg-modified-dot', 'Different'],
   ] as const;
   return (
-    <ul className="flex gap-3 text-xs text-muted" aria-label="Legend">
+    <ul className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted" aria-label="Legend">
       {items.map(([dot, label]) => (
         <li key={label} className="flex items-center gap-1">
           <span className={clsx('size-2.5 rounded-sm', dot)} aria-hidden />

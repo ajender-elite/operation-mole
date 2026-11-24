@@ -1,26 +1,27 @@
-import type { CommitInfo, GitSource, UpstreamCommitList } from '@om/shared';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, GitCommitHorizontal, LoaderCircle } from 'lucide-react';
-import type { JSX } from 'react';
+import type { CommitInfo, GitLogCommit, GitSource } from '@om/shared';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import clsx from 'clsx';
+import { GitCommitHorizontal, LoaderCircle } from 'lucide-react';
+import { useState, type JSX } from 'react';
 import { useSearchParams } from 'react-router';
-import { summarizeAttribution, shortSha, type CommitShare } from '../lib/attribution.ts';
-import { upstreamCommits } from '../lib/api.ts';
+import { gitLog } from '../lib/api.ts';
+import { shortSha, summarizeAttribution, type CommitShare } from '../lib/attribution.ts';
 import { formatDate } from '../lib/dates.ts';
+import { logUrl, commitUrl, type FileCompareTarget } from '../lib/urls.ts';
 import { fileDiffQuery, type SnapshotPair } from '../lib/snapshot-diff.ts';
-import { sourceFromParams, sourceLabel, type Side } from '../lib/sources.ts';
+import { sourceFromParams, type Side } from '../lib/sources.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
-import { commitUrl, fileUrl, type FileCompareTarget } from '../lib/urls.ts';
 import { useWorkspace } from '../lib/workspace-context.ts';
 
-/** How many commits each list shows at most. */
-const LIMIT = 50;
+/** Commits per page: more load on request. */
+const PAGE = 50;
 
 const value = (params: URLSearchParams, name: string): string | undefined => {
   const v = params.get(name);
   return v === null || v === '' ? undefined : v;
 };
 
-/** The pinned File Compare this list belongs to, and which side (Base or Target) it lists. */
+/** The pinned File Compare this list belongs to, and which side (Left or Right) it lists. */
 type CommitListContext = FileCompareTarget & { side: Side; hunk: number | undefined };
 
 function commitListContext(params: URLSearchParams): CommitListContext | undefined {
@@ -50,11 +51,22 @@ function commitListContext(params: URLSearchParams): CommitListContext | undefin
   };
 }
 
+/** What a row needs to show: a commit from the log, or one that accounts for the changes. */
+type RowCommit = Pick<
+  CommitInfo,
+  'sha' | 'subject' | 'authorName' | 'authorDate' | 'commitDate'
+> & {
+  parents?: string[] | undefined;
+  body?: string | undefined;
+};
+
+type Filter = 'all' | 'touching' | 'accounting';
+
 /**
- * Commit List: one side of a File Compare, in its own tab, as three separate questions:
- * what makes this side diverge, which of those commits touched this file, and which commits
- * account for the changes the File Compare shows (or the focused hunk of them). Each is
- * computed by the server or from its attribution; this page only arranges them.
+ * Commit List: one side of a File Compare, in its own tab. One list of the commits this side has
+ * and the other does not, with three filters: all of them, those that touched this file, and those
+ * that account for the changes on screen. Grouped by day; search; select two to open the range
+ * between them in a Range Log.
  */
 export function CommitListPage(): JSX.Element {
   const [params] = useSearchParams();
@@ -77,44 +89,58 @@ function CommitList({ context }: { context: CommitListContext }) {
   const { left, right, leftCommit, rightCommit, target, side, hunk } = context;
 
   // This side, and the other side it is compared with (its divergence is "not in the other").
-  const pinnedLeft: GitSource = { ...left, branch: leftCommit };
-  const pinnedRight: GitSource = { ...right, branch: rightCommit };
-  const mine = side === 'left' ? pinnedLeft : pinnedRight;
-  const other = side === 'left' ? pinnedRight : pinnedLeft;
+  const mine: GitSource = {
+    ...(side === 'left' ? left : right),
+    branch: side === 'left' ? leftCommit : rightCommit,
+  };
+  const other: GitSource = {
+    ...(side === 'left' ? right : left),
+    branch: side === 'left' ? rightCommit : leftCommit,
+  };
   const sidePath = side === 'left' ? target.leftPath : target.rightPath;
-  const sideLabel = side === 'left' ? 'Base' : 'Target';
+  const sideLabel = side === 'left' ? 'Left' : 'Right';
 
-  const divergence = useQuery({
-    queryKey: ['commit-list', user, sessionId, mine, other, null] as const,
-    queryFn: ({ signal }) =>
-      upstreamCommits(
-        { user, sessionId, upstream: mine, downstream: other, limit: LIMIT, hideReachable: true },
-        signal,
-      ),
-    staleTime: Infinity,
-  });
-  const touching = useQuery({
-    queryKey: ['commit-list', user, sessionId, mine, other, sidePath ?? null] as const,
-    queryFn: ({ signal }): Promise<UpstreamCommitList> =>
-      upstreamCommits(
+  const [filter, setFilter] = useState<Filter>('all');
+  const [query, setQuery] = useState('');
+  const [isSelecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+  const paths = filter === 'touching' && sidePath !== undefined ? [sidePath] : undefined;
+  const log = useInfiniteQuery({
+    queryKey: ['commit-list', user, sessionId, mine, other, paths ?? null] as const,
+    initialPageParam: 0,
+    queryFn: ({ pageParam, signal }) =>
+      gitLog(
         {
           user,
           sessionId,
-          upstream: mine,
-          downstream: other,
-          limit: LIMIT,
-          hideReachable: true,
-          ...(sidePath === undefined ? {} : { paths: [sidePath] }),
+          source: mine,
+          exclude: other,
+          withBody: true,
+          limit: PAGE,
+          skip: pageParam,
+          ...(paths === undefined ? {} : { paths }),
         },
         signal,
       ),
-    enabled: sidePath !== undefined,
+    getNextPageParam: (last, all) =>
+      last.hasMore ? all.reduce((count, page) => count + page.commits.length, 0) : undefined,
     staleTime: Infinity,
+    enabled: filter !== 'accounting',
   });
 
-  const pair: SnapshotPair = { user, sessionId, left: pinnedLeft, right: pinnedRight };
-  const visible = useQuery(fileDiffQuery(pair, target, false, true));
-  const visibleShares: CommitShare[] = (() => {
+  // The commits that account for the lines the File Compare shows (or the focused hunk of them).
+  const pair: SnapshotPair = {
+    user,
+    sessionId,
+    left: { ...left, branch: leftCommit },
+    right: { ...right, branch: rightCommit },
+  };
+  const visible = useQuery({
+    ...fileDiffQuery(pair, target, false, true),
+    enabled: filter === 'accounting',
+  });
+  const accounting: CommitShare[] = (() => {
     const diff = visible.data;
     if (!diff) return [];
     const hunkObject = hunk === undefined ? undefined : diff.hunks[hunk];
@@ -127,171 +153,319 @@ function CommitList({ context }: { context: CommitListContext }) {
     );
   })();
 
+  const source: RowCommit[] =
+    filter === 'accounting'
+      ? accounting.map((share) => share.commit)
+      : (log.data?.pages.flatMap((page) => page.commits) ?? []).map(
+          (commit: GitLogCommit): RowCommit => commit,
+        );
+  const needle = query.trim().toLowerCase();
+  const rows = source.filter(
+    (c) =>
+      needle === '' ||
+      c.subject.toLowerCase().includes(needle) ||
+      c.authorName.toLowerCase().includes(needle) ||
+      c.sha.startsWith(needle),
+  );
+  const groups = groupByDay(rows);
   const openCommit = (sha: string) => {
     workspace.open(commitUrl(user, sessionId, mine.repoId, sha));
   };
+  const toggle = (sha: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(sha)) next.delete(sha);
+      else next.add(sha);
+      return next;
+    });
+  };
+  // The list is newest first, so the one nearer the top is the newer of two selected commits.
+  const chosen = rows.filter((c) => selected.has(c.sha));
+  const range = chosen.length === 2 ? chosen : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-1.5 text-sm">
+      <header className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2 text-sm">
+        <GitCommitHorizontal className="size-4 shrink-0 text-muted" aria-hidden />
+        <h1 className="font-semibold">{sideLabel} · commits not in the other side</h1>
+        <span className="text-xs text-muted">{sourceLabelOf(mine, repos)}</span>
+      </header>
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-canvas px-4 py-2 text-sm">
+        <div role="group" aria-label="Show" className="flex flex-wrap gap-1">
+          <FilterChip
+            active={filter === 'all'}
+            onClick={() => {
+              setFilter('all');
+            }}
+          >
+            All diverging
+          </FilterChip>
+          <FilterChip
+            active={filter === 'touching'}
+            disabled={sidePath === undefined}
+            onClick={() => {
+              setFilter('touching');
+            }}
+          >
+            {sidePath === undefined ? 'Touching this file' : `Touching ${sidePath}`}
+          </FilterChip>
+          <FilterChip
+            active={filter === 'accounting'}
+            onClick={() => {
+              setFilter('accounting');
+            }}
+          >
+            Accounting for the changes shown
+          </FilterChip>
+        </div>
+        <input
+          type="search"
+          aria-label="Search commits"
+          placeholder="Search subject, author or SHA"
+          value={query}
+          className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5"
+          onChange={(event) => {
+            setQuery(event.target.value);
+          }}
+        />
         <button
           type="button"
-          title="Back to the File Compare, as you left it"
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-hover"
+          aria-pressed={isSelecting}
+          className="touch-target rounded-md border border-line px-2 py-0.5 hover:bg-hover"
           onClick={() => {
-            workspace.open(
-              fileUrl(
-                user,
-                sessionId,
-                { left, right, leftCommit, rightCommit, target },
-                { hunk: hunk === undefined ? undefined : String(hunk) },
-              ),
-            );
+            setSelecting((on) => !on);
+            setSelected(new Set());
           }}
         >
-          <ArrowLeft className="size-4" aria-hidden /> File compare
+          Select commits
         </button>
-        <h1 className="min-w-0 truncate font-medium">
-          <span className="text-muted">{sideLabel} commits · </span>
-          <span className="font-mono">{sourceLabel(mine, repos)}</span>
-        </h1>
-        <span className="ml-auto font-mono text-xs text-muted">{target.key}</span>
+        {range !== undefined && (
+          <button
+            type="button"
+            className="touch-target rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-accent"
+            onClick={() => {
+              const [top, bottom] = range;
+              if (top && bottom) {
+                workspace.open(logUrl(user, sessionId, mine.repoId, top.sha, bottom.sha));
+              }
+            }}
+          >
+            Log between these
+          </button>
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-auto p-4 text-sm">
-        <Group
-          title="Accounting for the changes shown"
-          hint={
-            hunk === undefined
-              ? `Commits that account for ${sideLabel} lines in this file, by git blame on the ${sideLabel} side.`
-              : `Only the focused hunk (${hunk + 1}).`
-          }
-          isLoading={visible.isPending}
-          error={visible.error?.message}
-          isEmpty={visibleShares.length === 0}
-          empty="No commits account for this side's lines in this file."
-        >
-          {visibleShares.map((s) => (
-            <CommitRow
-              key={s.commit.sha}
-              commit={s.commit}
-              detail={`${s.leftLines + s.rightLines} line${s.leftLines + s.rightLines === 1 ? '' : 's'} · ${s.hunks} hunk${s.hunks === 1 ? '' : 's'}`}
+      <div className="min-h-0 flex-1 overflow-auto">
+        {filter !== 'accounting' && log.isPending && (
+          <p className="flex items-center gap-2 p-6 text-muted">
+            <LoaderCircle className="size-4 animate-spin" aria-hidden /> Reading commits…
+          </p>
+        )}
+        {filter === 'accounting' && visible.isPending && (
+          <p className="flex items-center gap-2 p-6 text-muted">
+            <LoaderCircle className="size-4 animate-spin" aria-hidden /> Finding what accounts for
+            the changes…
+          </p>
+        )}
+        {log.isError && (
+          <p role="alert" className="p-6 text-error">
+            {log.error.message}
+          </p>
+        )}
+        {rows.length === 0 && !log.isPending && !visible.isPending && (
+          <p className="p-6 text-center text-muted">
+            {filter === 'accounting'
+              ? 'No commit accounts for the changes shown here.'
+              : 'No commits match.'}
+          </p>
+        )}
+        <ul aria-label="Diverging commits">
+          {groups.map((group) => (
+            <GroupRows
+              key={group.day}
+              day={group.day}
+              commits={group.commits}
+              isSelecting={isSelecting}
+              selected={selected}
+              onToggle={toggle}
               onOpen={openCommit}
             />
           ))}
-        </Group>
-
-        <Group
-          title={sidePath === undefined ? 'Touching this file' : `Touching ${sidePath}`}
-          hint={
-            sidePath === undefined
-              ? `This file does not exist on the ${sideLabel} side, so no ${sideLabel} commit touches it.`
-              : `Diverging ${sideLabel} commits that changed this file on the ${sideLabel} side.`
-          }
-          isLoading={sidePath !== undefined && touching.isPending}
-          error={touching.error?.message}
-          isEmpty={sidePath !== undefined && touching.data?.commits.length === 0}
-          empty="No diverging commit changed this file."
-          hasMore={touching.data?.hasMore}
-        >
-          {touching.data?.commits.map((c) => (
-            <CommitRow key={c.sha} commit={c} onOpen={openCommit} />
-          ))}
-        </Group>
-
-        <Group
-          title={`All diverging commits on ${sideLabel}`}
-          hint={`Commits in ${sideLabel}'s history that ${sideLabel === 'Base' ? 'Target' : 'Base'} does not contain. Not the same as the cause of the differences.`}
-          isLoading={divergence.isPending}
-          error={divergence.error?.message}
-          isEmpty={divergence.data?.commits.length === 0}
-          empty="Nothing on this side is missing from the other."
-          hasMore={divergence.data?.hasMore}
-        >
-          {divergence.data?.commits.map((c) => (
-            <CommitRow key={c.sha} commit={c} onOpen={openCommit} />
-          ))}
-        </Group>
+        </ul>
+        {filter !== 'accounting' && log.hasNextPage && (
+          <div className="flex justify-center p-3">
+            <button
+              type="button"
+              className="rounded-md border border-line px-3 py-1 text-sm hover:bg-hover disabled:opacity-50"
+              disabled={log.isFetchingNextPage}
+              onClick={() => {
+                void log.fetchNextPage();
+              }}
+            >
+              Load more commits
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function Group({
-  title,
-  hint,
-  isLoading,
-  error,
-  isEmpty,
-  empty,
-  hasMore,
+function sourceLabelOf(source: GitSource, repos: Array<{ id: string; name: string }>): string {
+  const repo = repos.find((r) => r.id === source.repoId);
+  return `${repo?.name ?? 'repository'} @ ${shortSha(source.branch)}`;
+}
+
+function FilterChip({
+  active,
+  disabled,
+  onClick,
   children,
 }: {
-  title: string;
-  hint: string;
-  isLoading: boolean;
-  error: string | undefined;
-  isEmpty: boolean | undefined;
-  empty: string;
-  hasMore?: boolean | undefined;
-  children: JSX.Element[] | JSX.Element | undefined;
-}): JSX.Element {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: JSX.Element | string;
+}) {
   return (
-    <section aria-label={title} className="space-y-2">
-      <header>
-        <h2 className="font-semibold">{title}</h2>
-        <p className="text-xs text-muted">{hint}</p>
-      </header>
-      {error !== undefined ? (
-        <p role="alert" className="rounded-md bg-error-soft p-2 text-error">
-          {error}
-        </p>
-      ) : isLoading ? (
-        <p className="flex items-center gap-2 text-muted">
-          <LoaderCircle className="size-4 animate-spin" aria-hidden /> Loading…
-        </p>
-      ) : isEmpty === true ? (
-        <p className="text-muted">{empty}</p>
-      ) : (
-        <ul className="divide-y divide-line rounded-md border border-line">{children}</ul>
+    <button
+      type="button"
+      aria-pressed={active}
+      disabled={disabled}
+      className={clsx(
+        'touch-target rounded-full border px-2.5 py-0.5 disabled:opacity-50',
+        active ? 'border-accent bg-accent-soft text-accent' : 'border-line hover:bg-hover',
       )}
-      {hasMore === true && (
-        <p className="text-xs text-muted">Showing the newest {LIMIT}; there are more.</p>
-      )}
-    </section>
+      onClick={onClick}
+    >
+      {children}
+    </button>
   );
 }
 
-/** One commit: opens its Commit tab. */
-function CommitRow({
-  commit,
-  detail,
+/** One day's heading and its commits. */
+function GroupRows({
+  day,
+  commits,
+  isSelecting,
+  selected,
+  onToggle,
   onOpen,
 }: {
-  commit: CommitInfo;
-  detail?: string;
+  day: string;
+  commits: RowCommit[];
+  isSelecting: boolean;
+  selected: ReadonlySet<string>;
+  onToggle: (sha: string) => void;
   onOpen: (sha: string) => void;
 }) {
   return (
-    <li>
-      <button
-        type="button"
-        className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-hover"
-        title={`${commit.sha}\nOpen this commit in a new tab`}
-        onClick={() => {
-          onOpen(commit.sha);
-        }}
-      >
-        <GitCommitHorizontal className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate">{commit.subject}</span>
-          <span className="block text-xs text-muted">
-            <span className="font-mono">{shortSha(commit.sha)}</span> · {commit.authorName} ·{' '}
-            {formatDate(commit.authorDate)}
-            {detail === undefined ? '' : ` · ${detail}`}
-          </span>
-        </span>
-      </button>
-    </li>
+    <>
+      <li className="sticky top-0 z-10 bg-canvas px-4 py-1">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+          {dayLabel(day)}
+        </h2>
+      </li>
+      {commits.map((commit) => {
+        const isChosen = selected.has(commit.sha);
+        const isMerge = (commit.parents?.length ?? 0) > 1;
+        return (
+          <li
+            key={commit.sha}
+            className={clsx(
+              'flex items-start gap-2 border-b border-line/60 px-4 py-2',
+              isChosen && 'bg-accent-soft/60',
+            )}
+          >
+            {isSelecting && (
+              <input
+                type="checkbox"
+                aria-label={commit.subject}
+                checked={isChosen}
+                className="mt-1.5 size-4 shrink-0"
+                onChange={() => {
+                  onToggle(commit.sha);
+                }}
+              />
+            )}
+            <button
+              type="button"
+              className="touch-target flex min-h-14 min-w-0 flex-1 items-start gap-3 rounded text-left hover:bg-hover coarse:min-h-14"
+              onClick={() => {
+                if (isSelecting) onToggle(commit.sha);
+                else onOpen(commit.sha);
+              }}
+            >
+              <span
+                aria-hidden
+                className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-hover text-xs font-semibold text-muted"
+              >
+                {initials(commit.authorName)}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{commit.subject}</span>
+                  {isMerge && (
+                    <span className="rounded bg-hover px-1 text-[11px] text-muted">merge</span>
+                  )}
+                </span>
+                {commit.body !== undefined && commit.body !== '' && (
+                  <span className="block truncate text-xs text-muted">
+                    {firstLine(commit.body)}
+                  </span>
+                )}
+                <span className="block text-xs text-muted">
+                  {commit.authorName} · {formatDate(commit.authorDate)}{' '}
+                  <span className="font-mono">{shortSha(commit.sha)}</span>
+                </span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </>
   );
+}
+
+/** Groups commits by the day they were committed, keeping the list's order. */
+function groupByDay(commits: RowCommit[]): Array<{ day: string; commits: RowCommit[] }> {
+  const groups: Array<{ day: string; commits: RowCommit[] }> = [];
+  for (const commit of commits) {
+    const day = commit.commitDate.slice(0, 10);
+    const last = groups[groups.length - 1];
+    if (last?.day === day) last.commits.push(commit);
+    else groups.push({ day, commits: [commit] });
+  }
+  return groups;
+}
+
+/** "Today", "Yesterday", or the date ("2 Jan 2026"). */
+function dayLabel(day: string): string {
+  const date = new Date(`${day}T12:00:00`);
+  const today = new Date();
+  const diffDays = Math.round(
+    (new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() -
+      new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()) /
+      86_400_000,
+  );
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function initials(name: string): string {
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p !== '');
+  return (
+    parts.length > 1
+      ? `${parts[0]?.[0] ?? ''}${parts.at(-1)?.[0] ?? ''}`
+      : (parts[0]?.slice(0, 2) ?? '')
+  ).toUpperCase();
+}
+
+function firstLine(text: string): string {
+  return text.split('\n').find((line) => line.trim() !== '') ?? '';
 }

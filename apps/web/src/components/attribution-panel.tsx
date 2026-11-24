@@ -9,6 +9,7 @@ import {
   type CommitShare,
   type ScopeAttribution,
 } from '../lib/attribution.ts';
+import { copyText } from '../lib/clipboard.ts';
 import { formatDate } from '../lib/dates.ts';
 
 /** What the panel explains: the user's current focus. */
@@ -49,15 +50,15 @@ type AttributionPanelProps = {
 };
 
 const placementText = {
-  left: 'Base history only',
-  right: 'Target history only',
+  left: 'Left history only',
+  right: 'Right history only',
   both: 'In both histories',
   unknown: 'Reachability unknown',
 } as const;
 
 const placementClass = {
-  left: 'bg-left-soft text-left',
-  right: 'bg-right-soft text-right',
+  left: 'bg-side-left-soft text-side-left',
+  right: 'bg-side-right-soft text-side-right',
   both: 'border border-dashed border-line text-muted',
   unknown: 'bg-hover text-muted',
 } as const;
@@ -74,9 +75,9 @@ function Placement({ commit }: { commit: DivergenceCommit }) {
 function Lines({ share }: { share: CommitShare }) {
   return (
     <span className="tabular-nums">
-      {share.leftLines > 0 && <span className="text-left">−{share.leftLines}</span>}
+      {share.leftLines > 0 && <span className="text-side-left">−{share.leftLines}</span>}
       {share.leftLines > 0 && share.rightLines > 0 && ' '}
-      {share.rightLines > 0 && <span className="text-right">+{share.rightLines}</span>}
+      {share.rightLines > 0 && <span className="text-side-right">+{share.rightLines}</span>}
       <span className="text-muted">
         {' '}
         line{share.leftLines + share.rightLines === 1 ? '' : 's'} · {share.hunks} hunk
@@ -110,7 +111,7 @@ export function AttributionPanel({
   return (
     <aside
       aria-label="Attribution"
-      className="flex min-h-0 flex-col border-t border-line bg-surface text-sm lg:w-[23rem] lg:shrink-0 lg:border-l lg:border-t-0"
+      className="flex min-h-0 flex-1 flex-col border-t border-line bg-surface text-sm lg:w-[23rem] lg:flex-none lg:shrink-0 lg:border-l lg:border-t-0"
     >
       <header className="flex items-start gap-2 border-b border-line px-3 py-2">
         <div className="min-w-0 flex-1">
@@ -285,9 +286,9 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 const placementExplanation = {
-  left: 'Only the Base snapshot contains this commit. The lines it accounts for are Base content that the Target does not have.',
+  left: 'Only the Left snapshot contains this commit. The lines it accounts for are Left content that the Right does not have.',
   right:
-    'Only the Target snapshot contains this commit. The lines it accounts for are Target content that the Base does not have.',
+    'Only the Right snapshot contains this commit. The lines it accounts for are Right content that the Left does not have.',
   both: 'Both snapshots contain this commit, so the lines it accounts for are shared history. The difference on those lines comes from the other side changing or removing them.',
   unknown: 'OM could not determine which snapshots contain this commit.',
 } as const;
@@ -327,7 +328,7 @@ function CommitDetail({
             aria-label="Copy SHA"
             className="rounded p-0.5 text-muted hover:bg-hover"
             onClick={() => {
-              void navigator.clipboard.writeText(commit.sha).catch(() => undefined);
+              void copyText(commit.sha);
             }}
           >
             <Copy className="size-3.5" aria-hidden />
@@ -344,10 +345,10 @@ function CommitDetail({
           {commit.committerName} &lt;{commit.committerEmail}&gt;
         </Field>
         <Field label="Committed">{formatDate(commit.commitDate)}</Field>
-        <Field label="In Base">
+        <Field label="In Left">
           {commit.inLeft === null ? 'unknown' : commit.inLeft ? 'yes' : 'no'}
         </Field>
-        <Field label="In Target">
+        <Field label="In Right">
           {commit.inRight === null ? 'unknown' : commit.inRight ? 'yes' : 'no'}
         </Field>
       </dl>

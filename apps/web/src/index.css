@@ -1,110 +1,101 @@
 @import 'tailwindcss';
 
-/* Design tokens. Colors: green = only left, blue = only right, orange = different. */
-@theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+/*
+ * Responsive variants (thresholds match lib/media.ts): `coarse:` for touch input, `short:` for a
+ * phone in landscape. Use them for CSS-only adaptations; JS-chosen layouts use useMediaQuery.
+ */
+@custom-variant coarse (@media (pointer: coarse));
+@custom-variant short (@media (max-height: 480px));
 
-  --color-canvas: #f8fafc;
-  --color-surface: #ffffff;
-  --color-ink: #0f172a;
-  --color-muted: #64748b;
-  --color-line: #e2e8f0;
-  --color-hover: #f1f5f9;
-  --color-accent: #4f46e5;
-  --color-accent-soft: #eef2ff;
-  --color-missing: #f8fafc;
-  --color-ok: #15803d;
-
-  --color-left: #166534;
-  --color-left-soft: #dcfce7;
-  --color-left-dot: #22c55e;
-  --color-right: #1e40af;
-  --color-right-soft: #dbeafe;
-  --color-right-dot: #3b82f6;
-  /* Side-by-side File Compare: Base is blue, Target is green (a pane, not an add/remove color). */
-  --color-base: #1e40af;
-  --color-base-soft: #dbeafe;
-  --color-target: #166534;
-  --color-target-soft: #dcfce7;
-  --color-modified: #9a3412;
-  --color-modified-soft: #ffedd5;
-  --color-modified-dot: #f97316;
-  --color-error: #b91c1c;
-  --color-error-soft: #fee2e2;
-  --color-error-dot: #ef4444;
-}
-
-/* Dark mode: follows the system unless the user picked a theme (html[data-theme]). */
-@custom-variant dark {
-  &:where([data-theme='dark'], [data-theme='dark'] *) {
-    @slot;
-  }
-  @media (prefers-color-scheme: dark) {
-    &:where(:root:not([data-theme='light']), :root:not([data-theme='light']) *) {
-      @slot;
+/*
+ * A touch target: on coarse pointers the element's tappable area grows to at least 40px square
+ * without changing how it looks. Apply to small icon buttons, chips and markers.
+ */
+@utility touch-target {
+  position: relative;
+  @variant coarse {
+    &::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: max(100%, 2.5rem);
+      height: max(100%, 2.5rem);
+      translate: -50% -50%;
     }
   }
 }
 
-:root {
-  color-scheme: light;
+/*
+ * Design tokens. Dark is the default; light applies under html[data-theme='light'].
+ * Meanings: green = only left, blue = only right, orange = different, red = error.
+ * Comfort rules and the contrast targets are in docs/frontend.md; lib/palette.test.ts enforces them.
+ */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --color-canvas: #1c1f24;
+  --color-surface: #23272e;
+  --color-ink: #cfcac1;
+  --color-muted: #a29e95;
+  --color-line: #343a42;
+  --color-hover: #2a2f37;
+  --color-accent: #8fa8d6;
+  --color-accent-soft: #26304a;
+  --color-missing: #20242a;
+  --color-ok: #9cc59a;
+
+  --color-side-left: #9cc59a;
+  --color-side-left-soft: #24342a;
+  --color-side-left-dot: #94c890;
+  --color-side-right: #8fb3d9;
+  --color-side-right-soft: #1f2d3d;
+  --color-side-right-dot: #86b8e6;
+  --color-modified: #e0b070;
+  --color-modified-soft: #3a2e1f;
+  --color-modified-dot: #e7a85a;
+  --color-error: #e08f8a;
+  --color-error-soft: #3d2424;
+  --color-error-dot: #ec8d86;
 }
 
-:root[data-theme='dark'] {
-  color-scheme: dark;
-  --color-canvas: #0b1120;
-  --color-surface: #111827;
-  --color-ink: #e2e8f0;
-  --color-muted: #94a3b8;
-  --color-line: #1f2937;
-  --color-hover: #1e293b;
-  --color-accent: #818cf8;
-  --color-accent-soft: #1e1b4b;
-  --color-missing: #0d1424;
-  --color-ok: #4ade80;
-
-  --color-left: #86efac;
-  --color-left-soft: #052e16;
-  --color-right: #93c5fd;
-  --color-right-soft: #172554;
-  --color-base: #93c5fd;
-  --color-base-soft: #172554;
-  --color-target: #86efac;
-  --color-target-soft: #052e16;
-  --color-modified: #fdba74;
-  --color-modified-soft: #431407;
-  --color-error: #fca5a5;
-  --color-error-soft: #450a0a;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    color-scheme: dark;
-    --color-canvas: #0b1120;
-    --color-surface: #111827;
-    --color-ink: #e2e8f0;
-    --color-muted: #94a3b8;
-    --color-line: #1f2937;
-    --color-hover: #1e293b;
-    --color-accent: #818cf8;
-    --color-accent-soft: #1e1b4b;
-    --color-missing: #0d1424;
-    --color-ok: #4ade80;
-
-    --color-left: #86efac;
-    --color-left-soft: #052e16;
-    --color-right: #93c5fd;
-    --color-right-soft: #172554;
-    --color-base: #93c5fd;
-    --color-base-soft: #172554;
-    --color-target: #86efac;
-    --color-target-soft: #052e16;
-    --color-modified: #fdba74;
-    --color-modified-soft: #431407;
-    --color-error: #fca5a5;
-    --color-error-soft: #450a0a;
+/* Dark is the default; the explicit light choice in html[data-theme] wins. */
+@custom-variant dark {
+  &:where(:root:not([data-theme='light']), :root:not([data-theme='light']) *) {
+    @slot;
   }
+}
+
+:root {
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-canvas: #f6f3ec;
+  --color-surface: #fbf9f4;
+  --color-ink: #2b2a27;
+  --color-muted: #6b675f;
+  --color-line: #e3ddd0;
+  --color-hover: #efeae0;
+  --color-accent: #3f5f9a;
+  --color-accent-soft: #e4e9f3;
+  --color-missing: #f1ede4;
+  --color-ok: #2f6b3a;
+
+  --color-side-left: #2f6b3a;
+  --color-side-left-soft: #e3eedd;
+  --color-side-left-dot: #4f9a5a;
+  --color-side-right: #2d5b8f;
+  --color-side-right-soft: #dde8f3;
+  --color-side-right-dot: #4d82bf;
+  --color-modified: #8a5a1c;
+  --color-modified-soft: #f5e8d2;
+  --color-modified-dot: #b06f22;
+  --color-error: #9e3a33;
+  --color-error-soft: #f5dedb;
+  --color-error-dot: #c95a52;
 }
 
 /* Empty side of a one-sided row. */

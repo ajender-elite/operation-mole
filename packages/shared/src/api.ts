@@ -1,5 +1,3 @@
-import type { Source } from './schemas.ts';
-
 /** Kind of filesystem entry, as seen without following symlinks. */
 export type EntryKind = 'file' | 'directory' | 'symlink';
 
@@ -34,9 +32,9 @@ export type CompareNode = {
   /** Present when the entry is a directory on at least one side. Sorted: directories first, then by name. */
   children?: CompareNode[];
   error?: string;
-  /** Only-in-Base file that git detected as renamed to this Target path (git sides only). */
+  /** Only-in-Left file that git detected as renamed to this Right path (git sides only). */
   renamedTo?: string;
-  /** Only-in-Target file that git detected as renamed from this Base path (git sides only). */
+  /** Only-in-Right file that git detected as renamed from this Left path (git sides only). */
   renamedFrom?: string;
   /** Rename similarity in percent (100 = same content). Present with `renamedTo`/`renamedFrom`. */
   similarity?: number;
@@ -49,42 +47,6 @@ export type CompareSummary = {
   onlyLeft: number;
   onlyRight: number;
   errors: number;
-};
-
-/** Response of `POST /api/compare/directories`. */
-export type DirectoryCompareResult = {
-  /** Absolute root folders that were compared (a checkout folder for git sources). */
-  left: string;
-  right: string;
-  /** Human-readable names for each side, e.g. a path or "repo @ branch". */
-  leftLabel: string;
-  rightLabel: string;
-  root: CompareNode;
-  summary: CompareSummary;
-  /** The exact commit a git Base side resolved to. */
-  leftSnapshot?: SnapshotInfo;
-  /** The exact commit a git Target side resolved to. */
-  rightSnapshot?: SnapshotInfo;
-};
-
-/** One side of a file diff. Binary or too-large files carry no `content`. */
-export type FileContent = {
-  path: string;
-  size: number;
-  sha256: string;
-  binary: boolean;
-  /** Present for text files under the size limit. */
-  content?: string;
-  /** True when the file is text but too large to show. */
-  tooLarge?: boolean;
-};
-
-/** Response of `GET /api/compare/files`. A missing side means only one file was given. */
-export type FileCompareResult = {
-  left?: FileContent;
-  right?: FileContent;
-  /** True when both files are present and byte-for-byte equal. */
-  identical: boolean;
 };
 
 /** Body of every 4xx/5xx API response. */
@@ -101,8 +63,25 @@ export type SessionSummary = {
   repoCount: number;
 };
 
-/** A repo cloned into a session. */
+/** Whether a remote answers now. `message` is git's reason when it does not, with credentials removed. */
+export type RemoteCheck = {
+  reachable: boolean;
+  message: string;
+};
+
+/** One remote of a repo: another place the same repository lives, with its own branches. */
+export type RemoteInfo = {
+  name: string;
+  url: string;
+  defaultBranch: string;
+  branches: string[];
+  /** When this remote was added or last fetched. */
+  fetchedAt: string;
+};
+
+/** A repo cloned into a session. The top-level fields describe its first remote (`origin`). */
 export type RepoInfo = {
+  remotes: RemoteInfo[];
   id: string;
   url: string;
   /** Short display name, e.g. "delta" for https://github.com/acme/delta.git. */
@@ -113,14 +92,28 @@ export type RepoInfo = {
   fetchedAt: string;
 };
 
-/** A comparison remembered in a session, newest first. Repeating one moves it to the top. */
-export type RecentComparison = {
-  id: string;
-  left: Source;
-  right: Source;
-  leftLabel: string;
-  rightLabel: string;
-  comparedAt: string;
+/** How many sessions, repos and remotes there may be (the server's `OM_MAX_*` settings). */
+export type ServerLimits = {
+  sessionsPerUser: number;
+  reposPerSession: number;
+  remotesPerRepo: number;
+};
+
+/**
+ * What the server's git can do and how it reaches remotes (`GET /api/server`). Names and flags only:
+ * never a URL, a credential or an environment value.
+ */
+export type ServerInfo = {
+  git: { version: string };
+  access: {
+    /** The URL schemes git may use (`GIT_ALLOW_PROTOCOL`). */
+    protocols: string[];
+    /** Always false: git never prompts (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode`). */
+    isInteractive: boolean;
+    /** Whether an SSH agent is available to the server (`SSH_AUTH_SOCK` is set). */
+    hasSshAgent: boolean;
+  };
+  limits: ServerLimits;
 };
 
 /** Response of `GET /api/users/:user/sessions/:sessionId`. */
@@ -128,7 +121,6 @@ export type SessionDetail = {
   user: string;
   session: SessionSummary;
   repos: RepoInfo[];
-  recent: RecentComparison[];
 };
 
 /**
@@ -142,7 +134,7 @@ export type SnapshotInfo = {
   ref: string;
 };
 
-/** Which snapshot a line, hunk or commit belongs to: `left` is Base, `right` is Target. */
+/** Which snapshot a line, hunk or commit belongs to: `left` is Left, `right` is Right. */
 export type SnapshotSide = 'left' | 'right';
 
 /** Commit metadata exactly as git records it. Dates are ISO-8601. */
@@ -168,26 +160,26 @@ export type CommitDetails = CommitInfo & { parents: string[] };
  * that historically caused the divergence.
  */
 export type DivergenceCommit = CommitInfo & {
-  /** Reachable from the Base snapshot; null when git could not tell. */
+  /** Reachable from the Left snapshot; null when git could not tell. */
   inLeft: boolean | null;
-  /** Reachable from the Target snapshot; null when git could not tell. */
+  /** Reachable from the Right snapshot; null when git could not tell. */
   inRight: boolean | null;
 };
 
 /**
- * One line of a hunk. `removed` lines exist only on the Base side of this hunk, `added`
- * lines only on the Target side (the diff reads Base → Target).
+ * One line of a hunk. `removed` lines exist only on the Left side of this hunk, `added`
+ * lines only on the Right side (the diff reads Left → Right).
  */
 export type DiffLine = {
   kind: 'context' | 'removed' | 'added';
   text: string;
-  /** 1-based line number in the Base file (context and removed lines). */
+  /** 1-based line number in the Left file (context and removed lines). */
   leftLine?: number;
-  /** 1-based line number in the Target file (context and added lines). */
+  /** 1-based line number in the Right file (context and added lines). */
   rightLine?: number;
   /**
    * Commit that `git blame` currently attributes this line to, in the history of the line's
-   * own side (removed → Base history, added → Target history). Absent for context lines and
+   * own side (removed → Left history, added → Right history). Absent for context lines and
    * when attribution was unavailable.
    */
   commit?: string;
@@ -211,9 +203,9 @@ export type DiffContentKind = 'text' | 'identical' | 'binary' | 'too-large';
 export type SnapshotFileDiff = {
   leftCommit: string;
   rightCommit: string;
-  /** Path in the Base snapshot (absent when the file only exists in the Target). */
+  /** Path in the Left snapshot (absent when the file only exists in the Right). */
   leftPath?: string;
-  /** Path in the Target snapshot (absent when the file only exists in the Base). */
+  /** Path in the Right snapshot (absent when the file only exists in the Left). */
   rightPath?: string;
   content: DiffContentKind;
   hunks: DiffHunk[];
@@ -317,6 +309,142 @@ export type PatchFile = {
 };
 
 /** Response of `POST /api/upstream/patch`: a commit's changes against its first parent. */
+/** A revision a primitive resolved: the commit it names, the ref asked for, and a display label. */
+export type GitRevision = { commit: string; ref: string; label: string };
+
+/** One file a commit changed, with its line counts (`git log --numstat`). */
+export type GitLogFile = {
+  path: string;
+  /** Set for a renamed file: where it was before. */
+  oldPath?: string | undefined;
+  additions: number;
+  deletions: number;
+  /** Binary files have no lines to count. */
+  binary: boolean;
+};
+
+/** A commit in a log: metadata and parents, with the body and files when asked for. */
+export type GitLogCommit = CommitInfo & {
+  parents: string[];
+  body?: string | undefined;
+  files?: GitLogFile[] | undefined;
+};
+
+/**
+ * Response of `POST /api/git/log`: the commits reachable from `include` and not from `exclude`
+ * (newest first), one page at a time. `total` counts them all; `hasMore` says whether a next page exists.
+ */
+export type GitLog = {
+  include: GitRevision;
+  exclude?: GitRevision | undefined;
+  commits: GitLogCommit[];
+  hasMore: boolean;
+  total: number;
+  /** With an exclude: whether it is in the history of include. */
+  excludeIsAncestor?: boolean | undefined;
+};
+
+/** Response of `POST /api/git/resolve`. */
+export type GitResolve = { revisions: GitRevision[] };
+
+/** Response of `POST /api/git/merge-base`: the common ancestor, or null when the histories share none. */
+export type GitMergeBase = { commit: string | null };
+
+/** Response of `POST /api/git/ancestry`: for each commit, whether it is in the history of the tip (null: git could not tell). */
+export type GitAncestry = { results: Array<{ commit: string; isAncestor: boolean | null }> };
+
+/** One line of a file, and the commit that last changed it. */
+export type GitBlameLine = {
+  /** Line number in the blamed file (1-based). */
+  line: number;
+  commit: string;
+  /** Where the line was in that commit's version of the file. */
+  origLine: number;
+  /** That commit's path for the file, when it was renamed. */
+  origPath?: string | undefined;
+  /** The commit is the root of the history (its parent is outside the blame). */
+  boundary: boolean;
+};
+
+/** Response of `POST /api/git/blame`. */
+export type GitBlame = {
+  path: string;
+  commit: string;
+  lines: GitBlameLine[];
+  commits: CommitInfo[];
+};
+
+/** Response of `POST /api/git/diff`: one diff per requested file pair, with hunks and no attribution. */
+export type GitDiff = { files: SnapshotFileDiff[] };
+
+/** Response of `POST /api/git/merge-tree`. */
+export type GitMergeTree = {
+  ours: GitRevision;
+  theirs: GitRevision;
+  base: string | null;
+  isClean: boolean;
+  /** Paths that conflict (empty when the merge is clean). */
+  conflictedPaths: string[];
+  /** The merged text (with conflict markers) of the first conflicted files; null when binary. */
+  conflictedFiles: Array<{ path: string; text: string | null }>;
+  /** Paths whose content the merge changes relative to ours (what applying changes here). */
+  changedPaths: string[];
+  /** Git's messages about the merge (for example "Auto-merging" or a conflict note). */
+  messages: string[];
+};
+
+/** A commit of a patch-equivalence comparison: the side it is on, or that it has an equal change on the other side. */
+export type GitPatchEquivalent = {
+  commit: CommitInfo & { parents: string[] };
+  mark: 'left' | 'right' | 'equivalent';
+};
+
+/** Response of `POST /api/git/patch-equivalents`. */
+export type GitPatchEquivalents = {
+  left: GitRevision;
+  right: GitRevision;
+  exclude?: GitRevision | undefined;
+  commits: GitPatchEquivalent[];
+};
+
+/** A file as one side of a tree comparison sees it. */
+export type GitTreeLeaf = {
+  kind: 'file' | 'symlink' | 'submodule';
+  /** Object id of the blob, or of the submodule commit. */
+  oid: string;
+  size: number;
+};
+
+/** One file path in a tree comparison: its status and what each side has. */
+export type GitTreeEntry = {
+  path: string;
+  status: 'identical' | 'modified' | 'only-left' | 'only-right';
+  left?: GitTreeLeaf | undefined;
+  right?: GitTreeLeaf | undefined;
+};
+
+/**
+ * The folder tree of two git sides, as Folder Compare shows it. Git sides have no absolute folders, so
+ * it carries labels and the exact commits instead.
+ */
+export type FolderComparison = {
+  leftLabel: string;
+  rightLabel: string;
+  root: CompareNode;
+  summary: CompareSummary;
+  leftSnapshot?: SnapshotInfo | undefined;
+  rightSnapshot?: SnapshotInfo | undefined;
+};
+
+/** Response of `POST /api/git/compare-trees`. Folders are not listed in `entries`: they follow from their files, and `folder` is the tree. */
+export type GitCompareTrees = {
+  left: GitRevision;
+  right: GitRevision;
+  entries: GitTreeEntry[];
+  renames: Array<{ from: string; to: string; similarity: number }>;
+  folder: FolderComparison;
+};
+
 export type CommitPatch = {
   commit: string;
   /** The commit's own git metadata, as `git log` reports it. */

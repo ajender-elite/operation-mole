@@ -1,4 +1,4 @@
-import type { CompareNode, DirectoryCompareResult } from '@om/shared';
+import type { CompareNode, FolderComparison } from '@om/shared';
 
 const file = (size = 10) => ({ kind: 'file' as const, size, mtimeMs: 0 });
 const dir = () => ({ kind: 'directory' as const, size: 0, mtimeMs: 0 });
@@ -71,11 +71,9 @@ export const root: CompareNode = {
   ],
 };
 
-export const dirResult: DirectoryCompareResult = {
-  left: '/L',
-  right: '/R',
-  leftLabel: '/L',
-  rightLabel: '/R',
+export const dirResult: FolderComparison = {
+  leftLabel: 'app @ main',
+  rightLabel: 'app @ dev',
   root,
   summary: { identical: 3, modified: 1, onlyLeft: 2, onlyRight: 2, errors: 0 },
 };

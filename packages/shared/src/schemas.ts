@@ -1,14 +1,5 @@
 import { z } from 'zod';
 
-/** Absolute on any OS: `/…` (Linux, macOS), `C:\…` or `C:/…`, or a Windows share `\\server\share…`. */
-const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/;
-
-const absolutePath = z
-  .string()
-  .trim()
-  .min(1, 'Path is required')
-  .refine((p) => ABSOLUTE_PATH.test(p), 'Path must be absolute');
-
 /** Usernames double as folder names on disk, so keep them to a safe character set. */
 export const UsernameSchema = z
   .string()
@@ -36,7 +27,24 @@ export const AddRepoRequestSchema = z.object({
 /** See {@link AddRepoRequestSchema}. */
 export type AddRepoRequest = z.infer<typeof AddRepoRequestSchema>;
 
-const PathSourceSchema = z.object({ type: z.literal('path'), path: absolutePath });
+/** The name a repo's remote goes by: a git ref component, so it is safe inside `refs/remotes/<name>/`. */
+export const RemoteNameSchema = z
+  .string()
+  .regex(
+    /^[a-z0-9][a-z0-9_-]{0,39}$/,
+    'Use 1 to 40 lowercase letters, digits, "-" or "_", starting with a letter or digit',
+  );
+/** The remote a repo is cloned from; a git source without a remote means this one. */
+export const DEFAULT_REMOTE = 'origin';
+
+/** Body of `POST …/repos/:repoId/remotes`: another place the same repo lives (a fork, a mirror). */
+export const AddRemoteRequestSchema = z.object({
+  name: RemoteNameSchema,
+  url: z.string().trim().min(1, 'Repository URL is required').max(500),
+});
+/** See {@link AddRemoteRequestSchema}. */
+export type AddRemoteRequest = z.infer<typeof AddRemoteRequestSchema>;
+
 /**
  * A snapshot of a cloned repo. `branch` is usually a branch name; a tag or a full or
  * abbreviated commit SHA also works, which pins the snapshot to an exact commit.
@@ -44,42 +52,12 @@ const PathSourceSchema = z.object({ type: z.literal('path'), path: absolutePath 
 export const GitSourceSchema = z.object({
   type: z.literal('git'),
   repoId: z.string().min(1, 'Choose a repository'),
+  /** The remote the branch is on (see {@link DEFAULT_REMOTE}). */
+  remote: RemoteNameSchema.optional(),
   branch: z.string().trim().min(1, 'Choose a branch'),
 });
 /** See {@link GitSourceSchema}. */
 export type GitSource = z.infer<typeof GitSourceSchema>;
-
-/** One side of a folder comparison: a local folder or a branch of a cloned repo. */
-export const SourceSchema = z.discriminatedUnion('type', [PathSourceSchema, GitSourceSchema]);
-/** See {@link SourceSchema}. */
-export type Source = z.infer<typeof SourceSchema>;
-
-/** A bare absolute path is accepted as shorthand for a path source. */
-const SourceInputSchema = z.union([
-  absolutePath.transform((path): Source => ({ type: 'path', path })),
-  SourceSchema,
-]);
-
-/** Body of `POST /api/compare/directories`. Each side is a source or a bare absolute path. */
-export const DirectoryCompareRequestSchema = z.object({
-  left: SourceInputSchema,
-  right: SourceInputSchema,
-  /** When given, the comparison is recorded in that session's recent list. */
-  user: UsernameSchema.optional(),
-  sessionId: SessionIdSchema.optional(),
-});
-/** What clients send (input type: bare paths allowed). See {@link DirectoryCompareRequestSchema}. */
-export type DirectoryCompareRequest = z.input<typeof DirectoryCompareRequestSchema>;
-
-/** Query of `GET /api/compare/files`: one or two absolute file paths. */
-export const FileCompareQuerySchema = z
-  .object({
-    left: absolutePath.optional(),
-    right: absolutePath.optional(),
-  })
-  .refine((q) => q.left !== undefined || q.right !== undefined, 'Provide at least one file path');
-/** See {@link FileCompareQuerySchema}. */
-export type FileCompareQuery = z.infer<typeof FileCompareQuerySchema>;
 
 /**
  * A path inside a snapshot: POSIX, relative, no `.`/`..` segments. Git reads it literally
@@ -106,66 +84,106 @@ export const CommitIdSchema = z
 const SessionFieldsSchema = z.object({ user: UsernameSchema, sessionId: SessionIdSchema });
 
 /**
- * Body of `POST /api/snapshot/file-diff`: one file between two git snapshots. Give both paths
- * for a modified or renamed file, or one of them for a file that exists on one side only.
+ * Body of `POST /api/git/log`: the commits reachable from `source` and not from `exclude`
+ * (`git log source ^exclude`), newest first. The caller decides whether `exclude` itself belongs
+ * in the view (a range log shows it as the end of the range).
  */
-export const SnapshotFileDiffRequestSchema = SessionFieldsSchema.extend({
-  left: GitSourceSchema,
-  right: GitSourceSchema,
-  leftPath: RepoPathSchema.optional(),
-  rightPath: RepoPathSchema.optional(),
-  /** Show the whole file as context instead of 3 lines around each change. */
-  fullFile: z.boolean().default(false),
-  /**
-   * Attribute each changed line with `git blame` (the default). `false` returns the same hunks
-   * without commits, for showing the difference before anyone asks what accounts for it.
-   */
-  attribute: z.boolean().default(true),
-}).refine(
-  (r) => r.leftPath !== undefined || r.rightPath !== undefined,
-  'Provide leftPath, rightPath or both',
-);
-/** What clients send. See {@link SnapshotFileDiffRequestSchema}. */
-export type SnapshotFileDiffRequest = z.input<typeof SnapshotFileDiffRequestSchema>;
-
-const UpstreamPairSchema = SessionFieldsSchema.extend({
-  /** The snapshot whose history is examined (Base in the UI). */
-  upstream: GitSourceSchema,
-  /** The snapshot the commits are applied to (Target in the UI). */
-  downstream: GitSourceSchema,
-});
-
-/** Body of `POST /api/upstream/commits`: which upstream commits to list. */
-export const UpstreamCommitsRequestSchema = UpstreamPairSchema.extend({
-  /** At most this many commits, newest first. */
-  limit: z.number().int().min(1).max(200).default(20),
-  /** Only commits committed on or after this day (`YYYY-MM-DD`, `git log --since`). */
+export const GitLogRequestSchema = SessionFieldsSchema.extend({
+  source: GitSourceSchema,
+  exclude: GitSourceSchema.optional(),
+  /** Only commits that changed at least one of these literal paths. */
+  paths: z.array(RepoPathSchema).max(100).optional(),
+  firstParent: z.boolean().default(false),
   since: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
+    .regex(/^d{4}-d{2}-d{2}$/, 'Use YYYY-MM-DD')
     .optional(),
-  /** Follow only first parents (the mainline of merges). */
-  firstParent: z.boolean().default(false),
-  /** Leave out commits that downstream already contains (`upstream ^downstream`). */
-  hideReachable: z.boolean().default(false),
-  /**
-   * Only commits that changed at least one of these paths in upstream (`git log -- paths`).
-   * Literal paths, not pathspec patterns.
-   */
-  paths: z.array(RepoPathSchema).max(100).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+  skip: z.number().int().min(0).default(0),
+  /** Include each commit's full message (`body`). */
+  withBody: z.boolean().default(false),
+  /** Include each commit's changed files with line counts, renames and binary marks. */
+  withStats: z.boolean().default(false),
 });
-/** What clients send. See {@link UpstreamCommitsRequestSchema}. */
-export type UpstreamCommitsRequest = z.input<typeof UpstreamCommitsRequestSchema>;
+/** What clients send. See {@link GitLogRequestSchema}. */
+export type GitLogRequest = z.input<typeof GitLogRequestSchema>;
 
-/** Body of `POST /api/upstream/applicability`: apply one upstream commit to the downstream snapshot. */
-export const ApplicabilityRequestSchema = UpstreamPairSchema.extend({ commit: CommitIdSchema });
-/** What clients send. See {@link ApplicabilityRequestSchema}. */
-export type ApplicabilityRequest = z.input<typeof ApplicabilityRequestSchema>;
+/** Body of `POST /api/git/show`: one commit's metadata and changes against its first parent. */
+export const GitShowRequestSchema = SessionFieldsSchema.extend({ source: GitSourceSchema });
+/** What clients send. See {@link GitShowRequestSchema}. */
+export type GitShowRequest = z.input<typeof GitShowRequestSchema>;
 
-/** Body of `POST /api/upstream/patch`: a commit's changes against its first parent. */
-export const CommitPatchRequestSchema = SessionFieldsSchema.extend({
-  upstream: GitSourceSchema,
-  commit: CommitIdSchema,
+/** Body of `POST /api/git/resolve`: the commits that each revision names. */
+export const GitResolveRequestSchema = SessionFieldsSchema.extend({
+  sources: z.array(GitSourceSchema).min(1).max(20),
 });
-/** What clients send. See {@link CommitPatchRequestSchema}. */
-export type CommitPatchRequest = z.input<typeof CommitPatchRequestSchema>;
+export type GitResolveRequest = z.input<typeof GitResolveRequestSchema>;
+
+/** Body of `POST /api/git/merge-base`: the best common ancestor of two revisions. */
+export const GitMergeBaseRequestSchema = SessionFieldsSchema.extend({
+  a: GitSourceSchema,
+  b: GitSourceSchema,
+});
+export type GitMergeBaseRequest = z.input<typeof GitMergeBaseRequestSchema>;
+
+/** Body of `POST /api/git/ancestry`: whether each commit is in the history of `tip`. */
+export const GitAncestryRequestSchema = SessionFieldsSchema.extend({
+  tip: GitSourceSchema,
+  commits: z.array(CommitIdSchema).min(1).max(200),
+});
+export type GitAncestryRequest = z.input<typeof GitAncestryRequestSchema>;
+
+/** Body of `POST /api/git/blame`: who last changed each line of a file (all of them, or some). */
+export const GitBlameRequestSchema = SessionFieldsSchema.extend({
+  source: GitSourceSchema,
+  path: RepoPathSchema,
+  lines: z.array(z.number().int().positive()).min(1).max(10_000).optional(),
+});
+export type GitBlameRequest = z.input<typeof GitBlameRequestSchema>;
+
+/** Body of `POST /api/git/diff`: the hunks between two revisions, for pairs of file paths. */
+export const GitDiffRequestSchema = SessionFieldsSchema.extend({
+  left: GitSourceSchema,
+  right: GitSourceSchema,
+  files: z
+    .array(
+      z
+        .object({ leftPath: RepoPathSchema.optional(), rightPath: RepoPathSchema.optional() })
+        .refine((f) => f.leftPath !== undefined || f.rightPath !== undefined, 'Give a path'),
+    )
+    .min(1)
+    .max(50),
+  /** Show the whole file as context instead of 3 lines around each change. */
+  fullFile: z.boolean().default(false),
+});
+export type GitDiffRequest = z.input<typeof GitDiffRequestSchema>;
+
+/**
+ * Body of `POST /api/git/merge-tree`: merges `theirs` into `ours` in a scratch object store that is
+ * removed afterwards. `base` defaults to their merge base.
+ */
+export const GitMergeTreeRequestSchema = SessionFieldsSchema.extend({
+  ours: GitSourceSchema,
+  theirs: GitSourceSchema,
+  base: GitSourceSchema.optional(),
+});
+export type GitMergeTreeRequest = z.input<typeof GitMergeTreeRequestSchema>;
+
+/**
+ * Body of `POST /api/git/patch-equivalents`: the commits on each side of `left...right` (after `exclude`),
+ * and which of them make the same change on the other side.
+ */
+export const GitPatchEquivalentsRequestSchema = SessionFieldsSchema.extend({
+  left: GitSourceSchema,
+  right: GitSourceSchema,
+  exclude: GitSourceSchema.optional(),
+});
+export type GitPatchEquivalentsRequest = z.input<typeof GitPatchEquivalentsRequestSchema>;
+
+/** Body of `POST /api/git/compare-trees`: every file of two trees, with its status (optionally some paths). */
+export const GitCompareTreesRequestSchema = SessionFieldsSchema.extend({
+  left: GitSourceSchema,
+  right: GitSourceSchema,
+  paths: z.array(RepoPathSchema).max(1000).optional(),
+});
+export type GitCompareTreesRequest = z.input<typeof GitCompareTreesRequestSchema>;

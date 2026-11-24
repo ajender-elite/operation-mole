@@ -13,7 +13,7 @@ const field =
 const small = 'mb-1 block text-xs font-medium text-muted';
 
 type SourcePickerProps = {
-  /** The side's name in the UI, e.g. "Base" or "Target". */
+  /** The side's name in the UI, e.g. "Left" or "Right". */
   side: string;
   value: SourceDraft;
   onChange: (value: SourceDraft) => void;

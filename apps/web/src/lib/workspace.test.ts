@@ -56,7 +56,7 @@ describe('tabIdentity', () => {
       `${BASE}/commits?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev&leftCommit=${commits[0] ?? ''}&rightCommit=${commits[1] ?? ''}&leftPath=${path}&rightPath=${path}&side=${side}`;
     // Where the user is inside the list (focused hunk) does not make another tab.
     expect(tabIdentity(`${list('left')}&hunk=1`, BASE)).toBe(tabIdentity(list('left'), BASE));
-    // Base and Target commit lists are separate tabs.
+    // Left and Right commit lists are separate tabs.
     expect(tabIdentity(list('left'), BASE)).not.toBe(tabIdentity(list('right'), BASE));
     expect(tabIdentity(list('left', ['c', 'd']), BASE)).not.toBe(tabIdentity(list('left'), BASE));
   });
@@ -107,5 +107,19 @@ describe('tab storage', () => {
     expect(loadTabs('kim', 's2')).toEqual([]);
     sessionStorage.setItem('om-tabs:kim:s3', '{"not":"tabs"}');
     expect(loadTabs('kim', 's3')).toEqual([]);
+  });
+});
+
+describe('range log tabs', () => {
+  const logUrl = `${BASE}/log?repo=r1&top=aaa&bottom=bbb`;
+
+  it('recognises a range log and keeps one tab per top and bottom', () => {
+    expect(tabKind(logUrl, BASE)).toBe('log');
+    expect(tabIdentity(logUrl, BASE)).toBe(
+      tabIdentity(`${BASE}/log?repo=r1&top=aaa&bottom=bbb&skip=50`, BASE),
+    );
+    expect(tabIdentity(logUrl, BASE)).not.toBe(
+      tabIdentity(`${BASE}/log?repo=r1&top=aaa&bottom=ccc`, BASE),
+    );
   });
 });

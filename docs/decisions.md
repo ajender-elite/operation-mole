@@ -10,7 +10,7 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 
 ### 2. Match by relative path; byte-for-byte equality
 
-**Decision:** entries are paired by relative path and are equal only if their bytes are identical. A rename shows as one entry only in base and one only in target.
+**Decision:** entries are paired by relative path and are equal only if their bytes are identical. A rename shows as one entry only in left and one only in right.
 **Why:** this is what was asked for, and it's predictable.
 **Trade-off:** no rename detection for folder sources. _Select for compare_ covers diffing two files with different names. (Superseded for git sources by decision 15.)
 
@@ -30,9 +30,9 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 **Why:** OM is a local or trusted-network tool, and accounts would add friction.
 **Trade-off:** anyone who knows a username can open its sessions. Add real authentication before exposing OM more widely.
 
-### 6. System git via simple-git; bare, blob-less clones with worktrees
+### 6. System git via simple-git; bare, blob-less clones with worktrees (worktrees removed by decision 27)
 
-**Decision:** run the machine's `git` instead of a JavaScript git library. Each repo is a bare `--filter=blob:none` clone per session, with one worktree per branch.
+**Decision:** run the machine's `git` instead of a JavaScript git library. Each repo is a bare `--filter=blob:none` clone per session, with one worktree per branch (the worktrees were removed by decision 27).
 **Why:** SSH keys and credential helpers work as they do in a terminal (isomorphic-git can't use SSH). Blob-less clones keep large repos fast, and worktrees let two branches of one repo be compared at once.
 **Trade-off:** git must be installed on the server.
 
@@ -65,19 +65,19 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 
 ### 12. Monaco bundled locally
 
-**Decision:** Monaco and its worker are bundled by Vite and lazy-loaded, with no CDN. (Since decision 22 no page renders it; see there.)
+**Decision:** Monaco and its worker are bundled by Vite and lazy-loaded, with no CDN. (Since decision 22 no page renders it; decision 26 removed it.)
 **Why:** works offline and avoids third-party requests. It's a large chunk, but only loaded when needed.
 
-### 13. Names: OM, Base and Target
+### 13. Names: OM, Left and Right
 
-**Decision:** the app is **OM (Operation Mole)**. The UI calls the sides **Base** and **Target**; code and URLs keep `left`/`right`.
+**Decision:** the app is **OM (Operation Mole)**. The UI calls the sides **Left** and **Right**; code and URLs keep `left`/`right`.
 **Why:** the names describe each side's role. Keeping `left`/`right` in code avoided churn and kept old links working.
 
 ### 14. Snapshots are commits
 
 **Decision:** a git side resolves to an exact commit; `branch` may also be a tag or a commit SHA. Every analysis (diffs, blame, applicability) runs on the resolved SHAs, and the UI pins follow-up requests to them.
 **Why:** a branch moves after **Fetch latest**; the commit is the snapshot's identity, and results keyed by SHA can be cached forever.
-**Trade-off:** a new worktree per pinned SHA when one is compared in Folders.
+**Trade-off:** a new worktree per pinned SHA when one is compared in Folders. (Superseded by decision 27: nothing is checked out any more.)
 
 ### 15. Rename detection for git sides, as links
 
@@ -86,7 +86,7 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 
 ### 16. Attribution is git blame on each line's own side
 
-**Decision:** `−` lines are blamed in Base's history, `+` lines in Target's, and each commit carries its reachability from both snapshots. OM calls these "divergence commits" and never "the cause".
+**Decision:** `−` lines are blamed in Left's history, `+` lines in Right's, and each commit carries its reachability from both snapshots. OM calls these "divergence commits" and never "the cause".
 **Why:** blame answers "which commit currently accounts for this line", which is the question OM can back with evidence. Reachability exposes shared history honestly.
 **Trade-off:** content one side deleted has no blame on that side (see [investigation model](investigation-model.md#known-limits)).
 
@@ -118,7 +118,7 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 ### 22. The UI compares git repositories only, in one page
 
 **Decision:** each side of a comparison is a repository URL (or a repo already cloned in the session) plus a branch the user picks explicitly; local folders are no longer offered. The old Files page is gone and `/files` links redirect to Folders (files now open in a File Compare tab, see decision 23).
-**Why:** Base and Target may live on different remotes, so the repository must be explicit, and a silently preselected default branch hid what was being compared. One page keeps navigation in one place (tree → file → back) instead of jumping between experiences.
+**Why:** Left and Right may live on different remotes, so the repository must be explicit, and a silently preselected default branch hid what was being compared. One page keeps navigation in one place (tree → file → back) instead of jumping between experiences.
 **Trade-off:** no comparison of two local folders, and no diff of two files with different names (_Select for compare_ is gone), in the UI. The server still accepts path sources and `GET /api/compare/files`. The Monaco `DiffView` is no longer rendered by any page.
 
 ### 23. Working contexts as tabs; explanation on request
@@ -138,3 +138,15 @@ Key choices and their trade-offs. Add an entry when you make a decision that som
 **Decision:** the end-to-end comparison test uses nginx's `stable-1.26` and `stable-1.28` branches, from a 1.4 MB bundle in `test/seed/`, through the API as the app uses it. `examples/left` and `examples/right` are gone, with their test, `postinstall` script and tooling exceptions, and so are `GET /api/defaults` and `OM_LEFT`/`OM_RIGHT`, which only pointed at them. The byte-level and sort-order edge cases the examples held (CRLF, trailing spaces, empty and binary files, symlinks, accents, numeric names) are temp-folder tests in `compare-directories.test.ts` and `sort.test.ts`.
 **Why:** OM compares git repositories only, so its main test should be a real repository compared branch to branch, not two hand-made folders. Edge cases are clearer as small, named tests next to the code than as files in a shared sample tree that had to stay byte-exact.
 **Trade-off:** the bundle holds nginx's trees, not its history (two fixture commits), so attribution and applicability tests stay on the small, controlled Hello-World scenarios. Live GitHub checks run only under `pnpm test:remote`.
+
+### 26. Monaco removed
+
+**Decision:** the Monaco diff view (`DiffView`), its loader, the language helper and the `monaco-editor` and `@monaco-editor/react` dependencies are deleted. Diffs are shown from the hunks the git primitives return (`SnapshotDiffView`).
+**Why:** no page had rendered Monaco since decision 22, so its bundle and worker were dead weight. The hunk view already does the job, with blame and attribution markers that Monaco could not place.
+**Trade-off:** Monaco’s own editing and search features are gone. The diff is read-only either way.
+
+### 27. Git primitives on trees; no checkouts; the legacy routes removed
+
+**Decision:** comparisons read the trees of two commits (`compare-trees`, `diff`, `blame`, `log`, `show`, `merge-tree`, `patch-equivalents`) and never a checkout. The folder and file routes (`/api/compare/*`), the file-diff route and the upstream routes are removed, and so are path sources, recent comparisons and worktrees. Attribution and applicability are composed in the browser from the primitives (decision 20 moved folder attribution there; this moves the rest).
+**Why:** a checkout per side writes a folder for every comparison, and the same questions answer from the object database with less I/O. Each question is one git call with a test, and the browser decides what the answers mean, which is where the UI rules live.
+**Trade-off:** a diff or a blame first fetches its blobs in one batch (a network round trip in a blob-less clone). Links to the removed API routes stop working, and recent comparisons are not kept.

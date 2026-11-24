@@ -20,7 +20,6 @@ let repos: RepoInfo[];
 let fetchCalls: string[];
 
 const label = (s: GitSource) => `app @ ${s.branch}`;
-const root = (s: GitSource) => `/data/wt/${s.repoId}/${s.branch}`;
 
 beforeEach(() => {
   requests = [];
@@ -38,7 +37,6 @@ beforeEach(() => {
           repoCount: repos.length,
         },
         repos,
-        recent: [],
       }),
     ),
     http.post('*/api/users/:user/sessions/:sessionId/repos', async ({ request }) => {
@@ -60,20 +58,24 @@ beforeEach(() => {
       );
       return HttpResponse.json(repos.find((r) => r.id === params['repoId']));
     }),
-    http.post('*/api/compare/directories', async ({ request }) => {
+    http.post('*/api/git/compare-trees', async ({ request }) => {
       const body = (await request.json()) as CompareBody;
       requests.push(body);
       if (body.left.branch === 'missing') {
         return HttpResponse.json({ message: 'Branch not found: missing' }, { status: 400 });
       }
       return HttpResponse.json({
-        ...dirResult,
-        left: root(body.left),
-        right: root(body.right),
-        leftLabel: label(body.left),
-        rightLabel: label(body.right),
-        leftSnapshot: { commit: 'a'.repeat(40), ref: body.left.branch },
-        rightSnapshot: { commit: 'b'.repeat(40), ref: body.right.branch },
+        left: { commit: 'a'.repeat(40), ref: body.left.branch, label: label(body.left) },
+        right: { commit: 'b'.repeat(40), ref: body.right.branch, label: label(body.right) },
+        entries: [],
+        renames: [],
+        folder: {
+          ...dirResult,
+          leftLabel: label(body.left),
+          rightLabel: label(body.right),
+          leftSnapshot: { commit: 'a'.repeat(40), ref: body.left.branch },
+          rightSnapshot: { commit: 'b'.repeat(40), ref: body.right.branch },
+        },
       });
     }),
   );
@@ -92,23 +94,23 @@ describe('DirectoryComparePage', () => {
       await screen.findByText(/choose a repository and a branch for both sides/i),
     ).toBeInTheDocument();
     expect(screen.queryByRole('tree')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Base repository URL')).toBeInTheDocument();
-    expect(screen.getByLabelText('Target repository URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Left repository URL')).toBeInTheDocument();
+    expect(screen.getByLabelText('Right repository URL')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^compare$/i })).toBeDisabled();
   });
 
   it('does not preselect a branch: the user must choose one', async () => {
     const user = userEvent.setup();
     renderApp(FOLDERS);
-    await user.selectOptions(await screen.findByLabelText('Base repository'), 'r1');
-    expect(screen.getByLabelText('Base branch')).toHaveValue('');
+    await user.selectOptions(await screen.findByLabelText('Left repository'), 'r1');
+    expect(screen.getByLabelText('Left branch')).toHaveValue('');
     expect(screen.getByRole('button', { name: /^compare$/i })).toBeDisabled();
   });
 
   it('puts the repos and branches in the URL and shows the colored comparison', async () => {
     const user = userEvent.setup();
     const app = renderApp(FOLDERS);
-    const sides = { Base: 'main', Target: 'dev' } as const;
+    const sides = { Left: 'main', Right: 'dev' } as const;
     for (const [side, branch] of Object.entries(sides)) {
       await user.selectOptions(await screen.findByLabelText(`${side} repository`), 'r1');
       await user.selectOptions(screen.getByLabelText(`${side} branch`), branch);
@@ -136,16 +138,16 @@ describe('DirectoryComparePage', () => {
     await user.click(screen.getByRole('button', { name: 'Show current directory statistics' }));
     const summary = screen.getByRole('group', { name: /summary/i });
     expect(within(summary).getByRole('button', { name: /identical.*3/i })).toBeInTheDocument();
-    expect(within(summary).getByRole('button', { name: /only in base.*2/i })).toBeInTheDocument();
-    expect(within(summary).getByRole('button', { name: /only in target.*2/i })).toBeInTheDocument();
+    expect(within(summary).getByRole('button', { name: /only in left.*2/i })).toBeInTheDocument();
+    expect(within(summary).getByRole('button', { name: /only in right.*2/i })).toBeInTheDocument();
     expect(within(summary).getByRole('button', { name: /different.*1/i })).toBeInTheDocument();
   });
 
   it('offers no commit pickers once compared: a new comparison is opened from the overview', async () => {
     renderApp(loaded);
     expect(await row('docs')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Base repository')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Target branch')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Left repository')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Right branch')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
   });
 
@@ -283,11 +285,11 @@ describe('DirectoryComparePage', () => {
     const app = renderApp(FOLDERS);
     await screen.findByText(/choose a repository and a branch/i);
 
-    for (const side of ['Base', 'Target'] as const) {
+    for (const side of ['Left', 'Right'] as const) {
       await user.selectOptions(await screen.findByLabelText(`${side} repository`), 'r1');
     }
-    await user.selectOptions(screen.getByLabelText('Base branch'), 'main');
-    await user.selectOptions(screen.getByLabelText('Target branch'), 'dev');
+    await user.selectOptions(screen.getByLabelText('Left branch'), 'main');
+    await user.selectOptions(screen.getByLabelText('Right branch'), 'dev');
     await user.click(screen.getByRole('button', { name: /^compare$/i }));
 
     expect(await row('docs')).toBeInTheDocument();
@@ -301,42 +303,42 @@ describe('DirectoryComparePage', () => {
   it('clones a new repo by URL from the repository list, then needs an explicit branch', async () => {
     const user = userEvent.setup();
     renderApp(FOLDERS);
-    await user.selectOptions(await screen.findByLabelText('Target repository'), 'add');
+    await user.selectOptions(await screen.findByLabelText('Right repository'), 'add');
     await user.type(
-      screen.getByLabelText('Target repository URL'),
+      screen.getByLabelText('Right repository URL'),
       'https://github.com/acme/lib.git',
     );
-    await user.click(screen.getByRole('button', { name: 'Clone target repository' }));
+    await user.click(screen.getByRole('button', { name: 'Clone right repository' }));
 
-    expect(await screen.findByLabelText('Target repository')).toHaveValue('r2');
-    expect(screen.getByLabelText('Target branch')).toHaveValue('');
-    await user.selectOptions(screen.getByLabelText('Target branch'), 'next');
-    expect(screen.getByLabelText('Target branch')).toHaveValue('next');
+    expect(await screen.findByLabelText('Right repository')).toHaveValue('r2');
+    expect(screen.getByLabelText('Right branch')).toHaveValue('');
+    await user.selectOptions(screen.getByLabelText('Right branch'), 'next');
+    expect(screen.getByLabelText('Right branch')).toHaveValue('next');
   });
 
   it('explains when a repo cannot be cloned', async () => {
     const user = userEvent.setup();
     repos = [];
     renderApp(FOLDERS);
-    const base = screen.getByRole('group', { name: 'Base' });
+    const base = screen.getByRole('group', { name: 'Left' });
     await user.type(
-      within(base).getByLabelText('Base repository URL'),
+      within(base).getByLabelText('Left repository URL'),
       'https://github.com/acme/broken.git',
     );
-    await user.click(within(base).getByRole('button', { name: 'Clone base repository' }));
+    await user.click(within(base).getByRole('button', { name: 'Clone left repository' }));
     expect(await screen.findByText(/could not clone/i)).toBeInTheDocument();
   });
 
   it('fetches the latest branches for a repo on request', async () => {
     const user = userEvent.setup();
     renderApp(FOLDERS);
-    await user.selectOptions(await screen.findByLabelText('Base repository'), 'r1');
-    await user.click(screen.getByRole('button', { name: 'Fetch latest for base repository' }));
+    await user.selectOptions(await screen.findByLabelText('Left repository'), 'r1');
+    await user.click(screen.getByRole('button', { name: 'Fetch latest for left repository' }));
     await waitFor(() => {
       expect(fetchCalls).toEqual(['r1']);
     });
     expect(
-      await within(screen.getByLabelText('Base branch')).findByRole('option', { name: 'hotfix' }),
+      await within(screen.getByLabelText('Left branch')).findByRole('option', { name: 'hotfix' }),
     ).toBeInTheDocument();
   });
 });

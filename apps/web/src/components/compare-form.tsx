@@ -11,14 +11,14 @@ type CompareFormProps = {
   user: string;
   sessionId: string;
   onSubmit: (left: GitSource, right: GitSource) => void;
-  /** Names of the two sides (default Base and Target). */
+  /** Names of the two sides (default Left and Right). */
   labels?: readonly [string, string];
   submitLabel?: string;
   /** Another thing to do with the same two sides (e.g. upstream analysis). */
   secondary?: { label: string; onSubmit: (left: GitSource, right: GitSource) => void };
 };
 
-/** Base and target pickers with swap and compare. Remount (via `key`) to reset from props. */
+/** Left and right pickers with swap and compare. Remount (via `key`) to reset from props. */
 export function CompareForm({
   initialLeft,
   initialRight,
@@ -26,7 +26,7 @@ export function CompareForm({
   user,
   sessionId,
   onSubmit,
-  labels = ['Base', 'Target'],
+  labels = ['Left', 'Right'],
   submitLabel = 'Compare',
   secondary,
 }: CompareFormProps): JSX.Element {

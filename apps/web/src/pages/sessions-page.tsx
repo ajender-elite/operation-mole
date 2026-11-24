@@ -5,6 +5,7 @@ import { useId, useState, type JSX, type SubmitEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { createSession, deleteSession, listSessions } from '../lib/api.ts';
 import { formatRelative } from '../lib/format.ts';
+import { useServerInfo } from '../lib/server.ts';
 import { sessionPath } from '../lib/urls.ts';
 import { clearStoredUser } from '../lib/user.ts';
 
@@ -17,6 +18,8 @@ export function SessionsPage(): JSX.Element {
   const id = useId();
 
   const sessions = useQuery({ queryKey: ['sessions', user], queryFn: () => listSessions(user) });
+  const limit = useServerInfo().data?.limits.sessionsPerUser;
+  const isAtLimit = sessions.isSuccess && limit !== undefined && sessions.data.length >= limit;
 
   const create = useMutation({
     mutationFn: (sessionName: string) => createSession(user, sessionName),
@@ -53,6 +56,19 @@ export function SessionsPage(): JSX.Element {
         </button>
       </div>
 
+      {sessions.isSuccess && limit !== undefined && (
+        <div className="space-y-2">
+          <p className="text-sm text-muted">
+            Sessions {sessions.data.length} of {limit}
+          </p>
+          {isAtLimit && (
+            <p className="text-sm text-muted">
+              You have {limit} sessions. Delete one to start another.
+            </p>
+          )}
+        </div>
+      )}
+
       <form
         onSubmit={submit}
         className="flex flex-wrap items-end gap-2 rounded-lg border border-line bg-surface p-4"
@@ -69,13 +85,14 @@ export function SessionsPage(): JSX.Element {
               create.reset();
             }}
             maxLength={60}
+            disabled={isAtLimit}
             placeholder="e.g. Release 2.4 review"
             className="w-full rounded-md border border-line bg-canvas px-3 py-1.5 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
           />
         </div>
         <button
           type="submit"
-          disabled={!name.trim() || create.isPending}
+          disabled={!name.trim() || create.isPending || isAtLimit}
           className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50"
         >
           <Plus className="size-4" aria-hidden />

@@ -1,7 +1,7 @@
 import type { GitSource, SnapshotFileDiff } from '@om/shared';
 import { queryOptions, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
-import { snapshotFileDiff } from './api.ts';
+import { loadFileDiff } from './file-diff.ts';
 import type { AttributionInput, DiffTarget } from './attribution.ts';
 import { usePooledQueries, type PooledTask } from './pooled-queries.ts';
 
@@ -47,20 +47,7 @@ const buildFileDiffQuery = (
       isFullFile,
       isAttributed,
     ] as const,
-    queryFn: ({ signal }) =>
-      snapshotFileDiff(
-        {
-          user: pair.user,
-          sessionId: pair.sessionId,
-          left: pair.left,
-          right: pair.right,
-          ...(target.leftPath === undefined ? {} : { leftPath: target.leftPath }),
-          ...(target.rightPath === undefined ? {} : { rightPath: target.rightPath }),
-          fullFile: isFullFile,
-          attribute: isAttributed,
-        },
-        signal,
-      ),
+    queryFn: ({ signal }) => loadFileDiff(pair, target, isFullFile, isAttributed, signal),
     staleTime: Infinity,
   });
 

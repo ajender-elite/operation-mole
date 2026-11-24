@@ -4,10 +4,10 @@ Guidance for Claude (and other coding agents) working in this repo. Read this fi
 
 ## What this is
 
-**OM (Operation Mole)** is a local web app for comparing a **Base** and a **Target**: two git branches cloned into a per-user **session** (the API also accepts two absolute folder paths; the UI offers only git). It shows what is identical, different, or present on only one side, and has a Monaco file diff.
+**OM (Operation Mole)** is a local web app for comparing a **Left** and a **Right**: two git branches cloned into a per-user **session** (every side is a git repository: folder paths are not supported). It shows what is identical, different, or present on only one side, and a hunk-by-hunk file diff with git blame on request.
 
-- Users identify by **username only** (no passwords). Sessions belong to a user. Each session has its own cloned repos and a list of recent comparisons.
-- Experiences, each in its own **tab** inside the session (`components/session-workspace.tsx`): **Overview** (add a repo first; then compare, recent, repos), **Folder Compare** (what differs), **File Compare** (one file at pinned commits), **Upstream** (commit applicability). Show only what the current state can use; attribution ("Explain difference") is computed only on request, scoped to what the user is looking at. The UI compares git repositories only: each side is a repo URL (sides may use different remotes) plus an explicitly chosen branch. The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
+- Users identify by **username only** (no passwords). Sessions belong to a user. Each session has its own cloned repos.
+- Experiences, each in its own **tab** inside the session (`components/session-workspace.tsx`): **Overview** (add a repo first; then compare, repos), **Folder Compare** (what differs), **File Compare** (one file at pinned commits), **Upstream** (commit applicability), **Commit** (one commit), **Commit List** (diverging commits of one side) and **Range Log** (`top` down to `bottom`). Show only what the current state can use; attribution ("Explain difference") is computed only on request, scoped to what the user is looking at. The UI compares git repositories only: each side is a repo URL (sides may use different remotes) plus an explicitly chosen branch. The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
 
 ## Commands
 
@@ -35,14 +35,15 @@ apps/server       Fastify. Node runs .ts directly (type stripping). No build ste
   src/index.ts          entry: loads config, starts the server
   src/config/           server-config.ts: env vars + flags, validated with zod (the only place env is read)
   src/app.ts            all routes + error mapping (CompareInputError→400, NotFound→404, Conflict→409)
-  src/compare/          folder walk, byte comparison, sort order (sort.ts)
-  src/git/              git-service.ts (clone/branches/worktree/fetch, run() for analysis), repo-manager.ts (per-session dirs, locks, snapshots)
-  src/snapshot/         snapshot-analyzer.ts (file diff + blame attribution, renames, ancestry), parsers, object views
-  src/upstream/         upstream-analyzer.ts (commit window, merge-tree applicability, patches)
-  src/store/store.ts    node:sqlite: users, sessions, repos, recent comparisons
+  src/compare/          folder rules on git trees (git-trees.ts), summary counts (summary.ts), sort order (sort.ts)
+  src/git/              git-service.ts (clone/branches/fetch, run() for analysis, read/write lock per repo), repo-manager.ts (per-session dirs, remotes, snapshots)
+  src/git-api/          the git primitives (log, show, blame, diff, merge-tree, compare-trees, patch-equivalents), commit-patch.ts, merge-tree-parse.ts
+  src/snapshot/         snapshot-analyzer.ts (file diffs as hunks, renames, ancestry), parsers, object views
+  src/cache/            analysis cache: memory tier, storage in each user’s SQLite, single-flight
+  src/store/store.ts    node:sqlite: sessions, repos, remotes, analysis cache (one file per user)
   test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts; scenario.ts: deterministic histories on the pinned Hello-World seed, and nginxRepo() with nginx stable-1.26/1.28; both bundles in test/seed/).
-apps/web          React 19 + Vite + Tailwind v4 + TanStack Query + React Router + Monaco
-  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/file|/upstream] inside SessionWorkspace tabs (/lab → upstream, /files → folders)
+apps/web          React 19 + Vite + Tailwind v4 + TanStack Query + React Router
+  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/file|/upstream|/commit|/commits|/log] inside SessionWorkspace tabs (/lab → upstream, /files → folders)
   src/components/, src/pages/   kebab-case files (app-shell.tsx), PascalCase components (AppShell)
   src/lib/              api client (parses every response with the shared schemas), sources (URL⇄Source), session hooks, tree, theme, format
   src/test/             MSW server + handlers, renderApp(url) helper
@@ -76,15 +77,15 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 ## Domain rules (keep these true)
 
 - **Statuses:**
-  - `identical`, `modified`, `only-left`, `only-right`, `error`. In the UI, _left_ is **Base** and _right_ is **Target**; code and URLs keep `left`/`right`.
+  - `identical`, `modified`, `only-left`, `only-right`, `error`. In the UI the two sides are called **Left** and **Right**; code and URLs keep `left`/`right`.
   - A folder is `identical` only if everything inside it is identical. A folder on both sides with differences inside is `modified`, shown with an orange dot.
   - A **file and a folder with the same name** are listed as two separate one-sided entries, never `modified`.
 - **Sort order:** all folders first, then files. Within each group, `compareNames` in `apps/server/src/compare/sort.ts`: `Intl.Collator('en', {numeric: true, sensitivity: 'base'})`, with code-point order as the tie-break. The server sorts; the UI never re-sorts.
-- **Colors:** green = only in base, blue = only in target, orange = different, red = error. Tokens are in `apps/web/src/index.css`.
+- **Colors:** green = only in left, blue = only in right, orange = different, red = error. Dark is the default theme; the warm eye-comfort palette and its WCAG rules are in `apps/web/src/index.css`, enforced by `lib/palette.test.ts`. Don't add colours outside those tokens.
 - **URL is the state:** session in the path; each side as `leftRepo=<id>&leftBranch=<b>` (same for `right`; the UI ignores `left=/abs/path`); current folder as `path=`; what is explained as `explain=` (`/`, `dir/`, `file`). Each tab has its own URL; the active tab's is the browser's. Reload must restore the exact view.
 - **Git:**
-  - The system git runs through simple-git. Each repo is a bare `--filter=blob:none` clone per session, with one worktree per branch.
-  - `.git` is ignored at the root of git sides.
+  - The system git runs through simple-git. Each repo is one bare `--filter=blob:none` clone per session, holding all its remotes. Nothing is checked out: analysis reads trees and blobs from the clone.
+  - Folder Compare reads the two trees (`compare-trees`), never a checkout.
   - Nothing fetches branches automatically; the user clicks **Fetch latest**. (Analysis does fetch missing file contents into blob-less clones, never refs.)
   - Analysis (diff, blame, log, merge-tree) goes through `GitService.run`, not simple-git; it must never write refs, the index or a worktree. `merge-tree` writes only to a scratch `GIT_OBJECT_DIRECTORY` that is always removed.
   - A git side resolves to an exact commit (branch, tag or SHA); analyses run on SHAs.
@@ -94,7 +95,7 @@ docs/             architecture, API, data model, git, comparison rules, frontend
   - URLs: https, ssh and scp-style only (`file://` only in tests via `allowedProtocols`).
   - Environment: `GIT_ALLOW_PROTOCOL`, `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode`, and an allowlist of inherited variables (simple-git rejects others such as `GIT_EDITOR`).
   - Usernames are a strict slug; disk paths use generated ids, never raw input.
-  - One git operation per repo at a time (lock in `RepoManager`).
+  - Locks: `RepoManager` runs changes to a repo (add, fetch, remote add/remove, checkout) one at a time per repo. `GitService` holds a read/write lock per repo folder: each analysis command takes the shared side, and fetch, remote removal and repo deletion take the exclusive side, so a prune never deletes a pack that a git command is reading (`repo-lock.ts`).
 
 ## Pitfalls already hit
 
@@ -104,11 +105,9 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 - **`pnpm start` passes `--production`**, not `NODE_ENV=production` (that syntax breaks on Windows).
 - **The nginx fixture** (`test/seed/nginx.bundle`) holds nginx's exact trees at two pinned release commits, as two fixture commits (`stable-1.28` a child of `stable-1.26`). Commit SHAs are the fixture's own; tree SHAs match GitHub's, which `test:remote` checks. Rebuild it only as described in docs/testing.md, then update the constants in `scenario.ts` and the counts in `nginx-branches.test.ts`.
 - **Long paths on Windows:** git refuses paths over 260 characters unless `core.longpaths` is on (nginx has them), so `GitService` passes `core.longpaths=true` to its simple-git commands. Keep it.
-- **Monaco:**
-  - It's bundled locally; the worker import is `monaco-editor/editor/editor.worker?worker` (0.57 exports map).
   - Keep `useInlineViewWhenSpaceIsLimited: false`, or narrow windows silently switch to inline.
 - **MSW v3** uses `onUnhandledFrame` (not `onUnhandledRequest`). Unhandled requests fail tests, so every page test needs handlers for every request the page makes, including the session `GET` the header makes.
-- **jsdom has no `matchMedia`:** `src/test/setup.ts` stubs it (light by default). `stubMatchMedia(true)` simulates dark mode.
+- **jsdom has no `matchMedia`:** `src/test/setup.ts` stubs it. The theme ignores the system preference (dark by default), so this only matters for media queries.
 - **No relative URLs in `fetch`:** jsdom's `fetch` rejects them, so the API client builds absolute URLs from `window.location.origin`.
 - **Blob-less clones and blame:** blaming a file in a `--filter=blob:none` clone fetches its history one object at a time unless prefetched. Keep `prefetchMissing` before blame and merge-tree, and `gc.auto=0` on analysis (lazy fetches add packs; auto-repack under concurrent readers broke blame on a real repo).
 - **Test scenarios serve partial clones** (`uploadpack.allowFilter`), so OM's test clones are blob-less like GitHub's. A test that reads objects directly from OM's clone must expect missing blobs.

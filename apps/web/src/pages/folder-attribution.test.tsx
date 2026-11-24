@@ -1,10 +1,4 @@
-import type {
-  CompareNode,
-  DirectoryCompareResult,
-  DivergenceCommit,
-  SnapshotFileDiff,
-  SnapshotFileDiffRequest,
-} from '@om/shared';
+import type { CompareNode, FolderComparison, DivergenceCommit, SnapshotFileDiff } from '@om/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -12,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { USER, repoInfo, sessionDetailHandler } from '../test/handlers.ts';
 import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
+import { fileDiffHandlers } from '../test/file-diff-handlers.ts';
 
 /*
  * The investigation flow: Folder Compare shows what differs; what accounts for it is computed
@@ -118,9 +113,7 @@ const root: CompareNode = {
   ],
 };
 
-const result = (tree: CompareNode): DirectoryCompareResult => ({
-  left: '/wt/main',
-  right: '/wt/dev',
+const result = (tree: CompareNode): FolderComparison => ({
   leftLabel: 'app @ main',
   rightLabel: 'app @ dev',
   root: tree,
@@ -214,52 +207,56 @@ const diffs: Record<string, SnapshotFileDiff> = {
 };
 
 let tree: CompareNode;
-let diffRequests: SnapshotFileDiffRequest[];
-
-/** What the server returns without git blame: the same hunks, no commits. */
-const plain = (diff: SnapshotFileDiff): SnapshotFileDiff => ({
-  ...diff,
-  commits: [],
-  hunks: diff.hunks.map((h) => ({
-    ...h,
-    lines: h.lines.map((line) => {
-      const copy = { ...line };
-      delete copy.commit;
-      return copy;
-    }),
-  })),
-});
+let diffRequests: Array<{ leftPath?: string | undefined; rightPath?: string | undefined }>;
+/** Files whose changed lines were asked to be blamed (the attributed ones). */
+let blamedPaths: string[];
 
 beforeEach(() => {
   tree = root;
   diffRequests = [];
+  blamedPaths = [];
   server.use(
     sessionDetailHandler({ repos: [repoInfo()] }),
-    http.post('*/api/compare/directories', () => HttpResponse.json(result(tree))),
-    http.post('*/api/snapshot/file-diff', async ({ request }) => {
-      const body = (await request.json()) as SnapshotFileDiffRequest;
-      diffRequests.push(body);
-      const key = body.leftPath ?? body.rightPath ?? '';
-      const found = diffs[key] ?? {
-        leftCommit: LEFT_SHA,
-        rightCommit: RIGHT_SHA,
-        ...(body.leftPath === undefined ? {} : { leftPath: body.leftPath }),
-        ...(body.rightPath === undefined ? {} : { rightPath: body.rightPath }),
-        content: 'text',
-        commits: [B],
-        hunks: [
-          {
-            header: '@@ -1 +1 @@',
-            leftStart: 1,
-            leftCount: 1,
-            rightStart: 1,
-            rightCount: 1,
-            lines: [{ kind: 'added', text: key, rightLine: 1, commit: B.sha }],
-          },
-        ],
-      };
-      return HttpResponse.json(body.attribute === false ? plain(found) : found);
-    }),
+    http.post('*/api/git/compare-trees', () =>
+      HttpResponse.json({
+        left: { commit: 'a'.repeat(40), ref: 'main', label: 'main' },
+        right: { commit: 'b'.repeat(40), ref: 'dev', label: 'dev' },
+        entries: [],
+        renames: [],
+        folder: result(tree),
+      }),
+    ),
+    ...fileDiffHandlers(
+      ({ leftPath, rightPath }) => {
+        diffRequests.push({ leftPath, rightPath });
+        const key = leftPath ?? rightPath ?? '';
+        return (
+          diffs[key] ?? {
+            leftCommit: LEFT_SHA,
+            rightCommit: RIGHT_SHA,
+            ...(leftPath === undefined ? {} : { leftPath }),
+            ...(rightPath === undefined ? {} : { rightPath }),
+            content: 'text',
+            commits: [B],
+            hunks: [
+              {
+                header: '@@ -1 +1 @@',
+                leftStart: 1,
+                leftCount: 1,
+                rightStart: 1,
+                rightCount: 1,
+                lines: [{ kind: 'added', text: key, rightLine: 1, commit: B.sha }],
+              },
+            ],
+          }
+        );
+      },
+      {
+        onBlame: (path) => {
+          blamedPaths.push(path);
+        },
+      },
+    ),
   );
 });
 
@@ -273,7 +270,7 @@ const subjects = async () =>
   within(await commitList())
     .getAllByRole('button')
     .map((b) => /[A-E]: [a-z -]+/.exec(b.textContent)?.[0]);
-const attributed = () => diffRequests.filter((r) => r.attribute !== false);
+const attributed = () => [...new Set(blamedPaths)];
 
 describe('explaining differences on demand', () => {
   it('shows what is different first, without attributing anything', async () => {
@@ -319,9 +316,9 @@ describe('explaining differences on demand', () => {
       expect((await subjects()).sort()).toEqual(['A: shared history', 'E: base-only docs']);
     });
     expect(within(panel()).getByText('In both histories')).toBeInTheDocument();
-    expect(within(panel()).getByText('Base history only')).toBeInTheDocument();
+    expect(within(panel()).getByText('Left history only')).toBeInTheDocument();
     // Nothing outside the folder was analyzed.
-    expect(attributed().map((r) => r.leftPath ?? r.rightPath)).toEqual(['docs/readme.md']);
+    expect(attributed()).toEqual(['docs/readme.md']);
   });
 
   it('puts the explanation away again', async () => {
@@ -388,7 +385,7 @@ describe('explaining differences on demand', () => {
     expect(app.search().get('commit')).toBe(B.sha);
     const details = within(panel()).getByLabelText('Commit details');
     expect(details).toHaveTextContent(B.sha);
-    expect(details).toHaveTextContent('Target history only');
+    expect(details).toHaveTextContent('Right history only');
     const where = within(details).getByRole('region', {
       name: /differences this commit accounts for/i,
     });
@@ -514,8 +511,8 @@ describe('working in tabs', () => {
     await user.click(tab('Overview'));
     const compare = await screen.findByRole('region', { name: 'Compare' });
     for (const [side, branch] of [
-      ['Base', 'main'],
-      ['Target', 'dev'],
+      ['Left', 'main'],
+      ['Right', 'dev'],
     ] as const) {
       await user.selectOptions(within(compare).getByLabelText(`${side} repository`), 'r1');
       await user.selectOptions(within(compare).getByLabelText(`${side} branch`), branch);

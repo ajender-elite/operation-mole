@@ -1,41 +1,41 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CompareNode, DirectoryCompareResult, GitSource, RepoInfo } from '@om/shared';
+import type { CompareNode, FolderComparison, GitBlame, GitSource, RepoInfo } from '@om/shared';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.ts';
 import { OmClient } from './om-client.ts';
-import { NGINX_1_26, NGINX_1_28, nginxRepo } from './scenario.ts';
+import { NGINX_1_26, NGINX_1_28, nginxFixtureKey, nginxRepo } from './scenario.ts';
 
 /*
- * OM on a real-world repository: nginx's stable-1.26 (Base) against stable-1.28 (Target),
+ * OM on a real-world repository: nginx's stable-1.26 (Left) against stable-1.28 (Right),
  * through the API as the app uses it (session, repo, branch on each side). The pinned bundle
  * keeps this offline and exact; test/remote/ checks it against github.com/nginx/nginx.
  */
 
-let base: string;
 let app: FastifyInstance;
 let om: OmClient;
 let repo: RepoInfo;
-let result: DirectoryCompareResult;
+let result: FolderComparison;
 
 const side = (branch: string): GitSource => om.source(repo, branch);
 
+// OM's own data for nginx is kept per machine, keyed by the bundle: the first run clones it, later
+// runs reuse that clone and session. Changing the bundle changes the key, so a stale clone is never used.
+const dataDir = path.join(tmpdir(), 'om-test-fixtures', `nginx-data-${nginxFixtureKey()}`);
+
 beforeAll(async () => {
-  base = await mkdtemp(path.join(tmpdir(), 'om-nginx-'));
-  const url = nginxRepo();
-  app = buildApp({ dataDir: path.join(base, 'data'), allowedProtocols: ['https', 'ssh', 'file'] });
+  app = buildApp({ dataDir, allowedProtocols: ['https', 'ssh', 'file'] });
   await app.ready();
-  om = await new OmClient(app, 'nginx').start();
-  repo = await om.addRepo(url);
+  om = await new OmClient(app, 'nginx').startOrResume('nginx-fixture');
+  repo = await om.addRepo(nginxRepo()); // the existing clone when there is one
   result = await om.compare(side(NGINX_1_26.branch), side(NGINX_1_28.branch));
-}, 120_000); // clones and checks out two nginx trees (about 1,000 files); 30s is too tight under load
+}, 120_000); // the first run clones and checks out two nginx trees (about 1,000 files)
 afterAll(async () => {
+  // The data folder stays: the next run reuses it.
   await app.close();
-  // Windows can hold a just-closed git file open for a moment: retry instead of failing.
-  await rm(base, { recursive: true, force: true, maxRetries: 5 });
 });
 
 /** The node at `p`: the folder when `kind` is `dir`, else the file. */
@@ -136,7 +136,6 @@ describe('a file diff between the nginx branches', () => {
       left: side(NGINX_1_26.branch),
       right: side(NGINX_1_28.branch),
       ...nginxH,
-      attribute: false,
     });
     expect(diff).toMatchObject({ leftCommit: NGINX_1_26.commit, rightCommit: NGINX_1_28.commit });
     expect(diff.hunks).toHaveLength(1);
@@ -158,19 +157,46 @@ describe('a file diff between the nginx branches', () => {
       ...nginxH,
     });
     const changed = diff.hunks.flatMap((h) => h.lines).filter((l) => l.kind !== 'context');
-    expect(changed.filter((l) => l.kind === 'removed').map((l) => l.commit)).toEqual([
-      NGINX_1_26.commit,
-      NGINX_1_26.commit,
-    ]);
-    expect(changed.filter((l) => l.kind === 'added').map((l) => l.commit)).toEqual([
-      NGINX_1_28.commit,
-      NGINX_1_28.commit,
-    ]);
-    expect(diff.commits.map((c) => c.sha).sort()).toEqual(
-      [NGINX_1_26.commit, NGINX_1_28.commit].sort(),
+    const removed = changed.filter((l) => l.kind === 'removed');
+    const added = changed.filter((l) => l.kind === 'added');
+    // Attribution is asked of git blame on each side's own lines (the diff itself carries none).
+    const left = await blameLines(
+      side(NGINX_1_26.branch),
+      nginxH.leftPath,
+      removed.map((l) => l.leftLine ?? 0),
     );
+    const right = await blameLines(
+      side(NGINX_1_28.branch),
+      nginxH.rightPath,
+      added.map((l) => l.rightLine ?? 0),
+    );
+    expect(removed.map((l) => left.get(l.leftLine ?? 0))).toEqual([
+      NGINX_1_26.commit,
+      NGINX_1_26.commit,
+    ]);
+    expect(added.map((l) => right.get(l.rightLine ?? 0))).toEqual([
+      NGINX_1_28.commit,
+      NGINX_1_28.commit,
+    ]);
   });
 });
+
+/** Line number → the commit git blame gives it, for the given lines of a file at one side's commit. */
+async function blameLines(
+  source: GitSource,
+  path: string,
+  lines: number[],
+): Promise<Map<number, string>> {
+  const res = await om.inject('/api/git/blame', {
+    user: om.user,
+    sessionId: om.sessionId,
+    source,
+    path,
+    lines,
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return new Map(res.json<GitBlame>().lines.map((l) => [l.line, l.commit]));
+}
 
 describe('nginx fixture', () => {
   it('is built once and reused by later calls', async () => {

@@ -1,12 +1,17 @@
-import type { CommitInfo, DiffContentKind, DivergenceCommit, SnapshotFileDiff } from '@om/shared';
+import { type DiffContentKind, type SnapshotFileDiff, SnapshotFileDiffSchema } from '@om/shared';
+import { z } from 'zod';
+import {
+  type AnalysisCache,
+  type CacheScope,
+  TieredAnalysisCache,
+} from '../cache/analysis-cache.ts';
+import { MemoryCacheStorage } from '../cache/memory-cache-storage.ts';
 import { createLimiter } from '../compare/limit.ts';
-import { CompareInputError, NotFoundError, errorMessage } from '../errors.ts';
+import { CompareInputError, NotFoundError } from '../errors.ts';
 import type { GitService } from '../git/git-service.ts';
 import type { ResolvedSnapshot } from '../git/repo-manager.ts';
 import type { Rename } from './annotate-renames.ts';
-import { parseBlamePorcelain } from './blame-parse.ts';
-import { lineRanges, parseHunks, wholeFileHunk, type ParsedHunks } from './diff-parse.ts';
-import { LruCache } from './lru-cache.ts';
+import { parseHunks, wholeFileHunk, type ParsedHunks } from './diff-parse.ts';
 import { objectView, type ObjectView } from './object-view.ts';
 
 /** Size limits for {@link SnapshotAnalyzer}. */
@@ -21,7 +26,6 @@ export type AnalyzerLimits = {
 const BINARY_SNIFF_BYTES = 8000;
 
 /** More `-L` ranges than this and blame runs on the whole file instead (command-line length). */
-const MAX_BLAME_RANGES = 400;
 
 type TreeEntry = { oid: string; size: number };
 
@@ -36,13 +40,17 @@ type SideContent =
 export class SnapshotAnalyzer {
   readonly #git: GitService;
   readonly #limits: AnalyzerLimits;
-  readonly #diffs = new LruCache<SnapshotFileDiff>(500);
-  readonly #ancestry = new LruCache<boolean | null>(50_000);
+  readonly #cache: AnalysisCache;
   readonly #limit = createLimiter(8);
 
-  constructor(git: GitService, limits: AnalyzerLimits) {
+  constructor(
+    git: GitService,
+    limits: AnalyzerLimits,
+    cache: AnalysisCache = new TieredAnalysisCache(new MemoryCacheStorage()),
+  ) {
     this.#git = git;
     this.#limits = limits;
+    this.#cache = cache;
   }
 
   /**
@@ -50,30 +58,34 @@ export class SnapshotAnalyzer {
    * git can't tell (e.g. an object is missing).
    */
   async isAncestor(
+    scope: CacheScope,
     view: ObjectView,
     commit: string,
     tip: string,
     signal?: AbortSignal,
   ): Promise<boolean | null> {
     if (commit === tip) return true;
-    const key = `${commit}>${tip}`;
-    const isCachedAncestor = this.#ancestry.get(key);
-    if (isCachedAncestor !== undefined) return isCachedAncestor;
-    const isReachable = await this.#limit(async () => {
-      try {
-        const { exitCode } = await this.#git.run(
-          view.cwd,
-          ['merge-base', '--is-ancestor', commit, tip],
-          { env: view.env, okExitCodes: [0, 1], ...(signal ? { signal } : {}) },
-        );
-        return exitCode === 0;
-      } catch (err) {
-        if (signal?.aborted === true) throw err;
-        return null;
-      }
-    });
-    if (isReachable !== null) this.#ancestry.set(key, isReachable);
-    return isReachable;
+    return await this.#cache.remember(
+      scope,
+      `ancestor|${commit}|${tip}`,
+      z.boolean().nullable(),
+      () =>
+        this.#limit(async () => {
+          try {
+            const { exitCode } = await this.#git.run(
+              view.cwd,
+              ['merge-base', '--is-ancestor', commit, tip],
+              { env: view.env, okExitCodes: [0, 1], ...(signal ? { signal } : {}) },
+            );
+            return exitCode === 0;
+          } catch (err) {
+            if (signal?.aborted === true) throw err;
+            return null;
+          }
+        }),
+      // null means git could not tell (an object is missing): ask again next time.
+      (isReachable) => isReachable !== null,
+    );
   }
 
   /** Files git detects as renamed from `left` to `right` (`git diff -M`). */
@@ -98,10 +110,8 @@ export class SnapshotAnalyzer {
   }
 
   /**
-   * One file between two snapshots, read Base → Target: git's hunks, plus for every changed
-   * line the commit `git blame` attributes it to in that line's own history (removed lines in
-   * Base's, added lines in Target's), and whether each such commit is reachable from either side.
-   * With `isAttributed: false`, git blame is skipped: the same hunks, with no commits.
+   * One file between two snapshots, read Left → Right: git's hunks. No attribution here: which commit
+   * accounts for a line is a question the caller asks git blame (`blame`) about, on the side it wants.
    */
   async fileDiff(
     left: ResolvedSnapshot,
@@ -110,22 +120,34 @@ export class SnapshotAnalyzer {
       leftPath?: string | undefined;
       rightPath?: string | undefined;
       isFullFile?: boolean;
-      isAttributed?: boolean;
     },
     signal?: AbortSignal,
   ): Promise<SnapshotFileDiff> {
-    const { leftPath, rightPath, isFullFile = false, isAttributed = true } = paths;
-    const key = [
+    const { leftPath, rightPath, isFullFile = false } = paths;
+    const key = JSON.stringify([
+      'file-diff',
       left.commit,
       right.commit,
       leftPath ?? '',
       rightPath ?? '',
       isFullFile,
-      isAttributed,
-    ].join('\0');
-    const cached = this.#diffs.get(key);
-    if (cached) return cached;
+    ]);
+    return await this.#cache.remember(left.cacheScope, key, SnapshotFileDiffSchema, () =>
+      this.#computeFileDiff(left, right, { leftPath, rightPath, isFullFile }, signal),
+    );
+  }
 
+  async #computeFileDiff(
+    left: ResolvedSnapshot,
+    right: ResolvedSnapshot,
+    paths: {
+      leftPath: string | undefined;
+      rightPath: string | undefined;
+      isFullFile: boolean;
+    },
+    signal?: AbortSignal,
+  ): Promise<SnapshotFileDiff> {
+    const { leftPath, rightPath, isFullFile } = paths;
     const opt = signal ? { signal } : {};
     const [l, r] = await Promise.all([
       leftPath === undefined ? undefined : this.#readSide(left, leftPath, opt),
@@ -147,9 +169,7 @@ export class SnapshotAnalyzer {
       const parsed = await this.#hunks(left, right, l, r, isFullFile, opt);
       result.hunks = parsed.hunks;
       if (parsed.isTruncated) result.truncated = true;
-      if (isAttributed) await this.#attribute(result, left, right, leftPath, rightPath, opt);
     }
-    this.#diffs.set(key, result);
     return result;
   }
 
@@ -227,104 +247,6 @@ export class SnapshotAnalyzer {
     if (l?.kind === 'text') return wholeFileHunk(l.text, 'left', max);
     if (r?.kind === 'text') return wholeFileHunk(r.text, 'right', max);
     return { hunks: [], isTruncated: false };
-  }
-
-  async #attribute(
-    result: SnapshotFileDiff,
-    left: ResolvedSnapshot,
-    right: ResolvedSnapshot,
-    leftPath: string | undefined,
-    rightPath: string | undefined,
-    opt: { signal?: AbortSignal },
-  ): Promise<void> {
-    const removed = result.hunks.flatMap((h) =>
-      h.lines.flatMap((x) =>
-        x.kind === 'removed' && x.leftLine !== undefined ? [x.leftLine] : [],
-      ),
-    );
-    const added = result.hunks.flatMap((h) =>
-      h.lines.flatMap((x) =>
-        x.kind === 'added' && x.rightLine !== undefined ? [x.rightLine] : [],
-      ),
-    );
-    const notes: string[] = [];
-    const blameSide = async (
-      snapshot: ResolvedSnapshot,
-      filePath: string | undefined,
-      lines: number[],
-    ) => {
-      if (filePath === undefined || lines.length === 0) return undefined;
-      try {
-        return await this.#blame(snapshot, filePath, lines, opt);
-      } catch (err) {
-        if (opt.signal?.aborted === true) throw err;
-        notes.push(`git blame failed in ${snapshot.label}: ${errorMessage(err)}`);
-        return undefined;
-      }
-    };
-    const [leftBlame, rightBlame] = await Promise.all([
-      blameSide(left, leftPath, removed),
-      blameSide(right, rightPath, added),
-    ]);
-
-    const infos = new Map<string, CommitInfo>();
-    const sides = new Map<string, { isLeft: boolean; isRight: boolean }>();
-    for (const hunk of result.hunks) {
-      for (const line of hunk.lines) {
-        const isLeft = line.kind === 'removed';
-        const blame = isLeft ? leftBlame : line.kind === 'added' ? rightBlame : undefined;
-        const number = isLeft ? line.leftLine : line.rightLine;
-        const sha = blame && number !== undefined ? blame.lines.get(number) : undefined;
-        const info = sha === undefined ? undefined : blame?.commits.get(sha);
-        if (sha === undefined || !info) continue;
-        line.commit = sha;
-        infos.set(sha, info);
-        const seen = sides.get(sha) ?? { isLeft: false, isRight: false };
-        sides.set(sha, { isLeft: seen.isLeft || isLeft, isRight: seen.isRight || !isLeft });
-      }
-    }
-
-    const view = objectView(left.repoDir, right.repoDir);
-    result.commits = await Promise.all(
-      [...infos.values()].map(async (info): Promise<DivergenceCommit> => {
-        const seen = sides.get(info.sha) ?? { isLeft: false, isRight: false };
-        const [isInLeft, isInRight] = await Promise.all([
-          seen.isLeft ? true : this.isAncestor(view, info.sha, left.commit, opt.signal),
-          seen.isRight ? true : this.isAncestor(view, info.sha, right.commit, opt.signal),
-        ]);
-        return { ...info, inLeft: isInLeft, inRight: isInRight };
-      }),
-    );
-    result.commits.sort(
-      (a, b) => b.commitDate.localeCompare(a.commitDate) || a.sha.localeCompare(b.sha),
-    );
-    if (notes.length > 0) result.attributionNote = notes.join('\n');
-  }
-
-  async #blame(
-    snapshot: ResolvedSnapshot,
-    filePath: string,
-    lines: number[],
-    opt: { signal?: AbortSignal },
-  ) {
-    let ranges = lineRanges(lines);
-    for (let gap = 4; ranges.length > MAX_BLAME_RANGES && gap < 1 << 20; gap *= 4) {
-      ranges = lineRanges(lines, gap);
-    }
-    const args = ['blame', '--porcelain'];
-    if (ranges.length <= MAX_BLAME_RANGES) {
-      for (const [start, end] of ranges) args.push('-L', `${start},${end}`);
-    }
-    args.push(snapshot.commit, '--', filePath);
-    // One request for the file's history instead of one lazy fetch per version.
-    await this.#git.prefetchMissing(snapshot.repoDir, [snapshot.commit], [filePath], opt);
-    try {
-      return parseBlamePorcelain((await this.#git.run(snapshot.repoDir, args, opt)).stdout);
-    } catch (err) {
-      if (opt.signal?.aborted === true) throw err;
-      // Another process may have been adding objects to the clone at that moment: retry once.
-      return parseBlamePorcelain((await this.#git.run(snapshot.repoDir, args, opt)).stdout);
-    }
   }
 }
 

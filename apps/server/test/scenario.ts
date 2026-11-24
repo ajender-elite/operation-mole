@@ -52,7 +52,7 @@ export type NginxBranch = {
   tree: string;
 };
 
-/** nginx 1.26.3 (Base in tests). */
+/** nginx 1.26.3 (Left in tests). */
 export const NGINX_1_26: NginxBranch = {
   branch: 'stable-1.26',
   commit: 'a280a02a0d94bf08134927565a7c91aa000db4e8',
@@ -60,7 +60,7 @@ export const NGINX_1_26: NginxBranch = {
   tree: 'b23b529a82de4b47b740754f4a2480a8658e5ad9',
 };
 
-/** nginx 1.28.3 (Target in tests). */
+/** nginx 1.28.3 (Right in tests). */
 export const NGINX_1_28: NginxBranch = {
   branch: 'stable-1.28',
   commit: 'b3451064966a947280381a0a645e079b287e67a0',
@@ -76,9 +76,13 @@ export const NGINX_1_28: NginxBranch = {
  * Tests only read it (OM clones from it), so sharing it is safe; each test still gets its
  * own OM data folder. Changing the bundle changes the key, so a stale copy is never reused.
  */
+/** A short key of the nginx bundle's contents: changing the bundle changes it. */
+export function nginxFixtureKey(): string {
+  return createHash('sha256').update(readFileSync(NGINX_BUNDLE)).digest('hex').slice(0, 16);
+}
+
 export function nginxRepo(): string {
-  const key = createHash('sha256').update(readFileSync(NGINX_BUNDLE)).digest('hex').slice(0, 16);
-  const dir = path.join(tmpdir(), 'om-test-fixtures', `nginx-${key}.git`);
+  const dir = path.join(tmpdir(), 'om-test-fixtures', `nginx-${nginxFixtureKey()}.git`);
   if (!existsSync(dir)) {
     // Build in a private folder, then rename: parallel test files never see a half-built copy.
     const staging = `${dir}.${process.pid}-${randomUUID()}`;

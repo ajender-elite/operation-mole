@@ -1,14 +1,15 @@
-import type { CommitPatch } from '@om/shared';
-import { screen, within } from '@testing-library/react';
+import type { CommitPatch, GitLog, GitLogRequest, GitShowRequest } from '@om/shared';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { repoInfo, sessionDetailHandler } from '../test/handlers.ts';
 import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
 
 const SHA = 'd'.repeat(40);
 const PARENT = 'e'.repeat(40);
+const BOTTOM = 'f'.repeat(40);
 
 const patch: CommitPatch = {
   commit: SHA,
@@ -54,15 +55,32 @@ const patch: CommitPatch = {
   ],
 };
 
-let requested: unknown;
+let showRequest: GitShowRequest | undefined;
+let logRequest: GitLogRequest | undefined;
 
 beforeEach(() => {
-  requested = undefined;
+  showRequest = undefined;
+  logRequest = undefined;
   server.use(
     sessionDetailHandler({ repos: [repoInfo()] }),
-    http.post('*/api/upstream/patch', async ({ request }) => {
-      requested = await request.json();
+    http.post('*/api/git/show', async ({ request }) => {
+      showRequest = (await request.json()) as GitShowRequest;
       return HttpResponse.json(patch);
+    }),
+    http.post('*/api/git/log', async ({ request }) => {
+      logRequest = (await request.json()) as GitLogRequest;
+      return HttpResponse.json<GitLog>({
+        include: { commit: SHA, ref: SHA, label: 'app' },
+        commits: [
+          {
+            ...patch.details,
+            body: 'The parser now rejects trailing commas.\nSee https://example.com/issue/7 for the report.',
+            files: [],
+          },
+        ],
+        hasMore: false,
+        total: 1,
+      });
     }),
   );
 });
@@ -70,32 +88,72 @@ beforeEach(() => {
 const url = `/u/karthik/s/s1/commit?repo=r1&commit=${SHA}`;
 
 describe('Commit tab', () => {
-  it('shows the commit it was opened for, with its git metadata and parents', async () => {
+  it('shows the commit it was opened for: subject, author, dates and parents', async () => {
     renderApp(url);
     expect(await screen.findByRole('heading', { name: /Tighten the parser/ })).toBeVisible();
     expect(screen.getByText(/authored/)).toBeInTheDocument();
-    expect(screen.getByText(/Parent: eeeeeee/)).toBeInTheDocument();
-    expect(requested).toMatchObject({
-      upstream: { type: 'git', repoId: 'r1', branch: SHA },
-      commit: SHA,
-    });
+    expect(screen.getByRole('button', { name: `Open parent ${PARENT.slice(0, 8)}` })).toBeVisible();
+    expect(showRequest).toMatchObject({ source: { type: 'git', repoId: 'r1', branch: SHA } });
   });
 
-  it('shows each changed file, and says when there are no lines to show', async () => {
+  it('shows the full message, with its links', async () => {
+    renderApp(url);
+    expect(await screen.findByText(/rejects trailing commas/)).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'https://example.com/issue/7' });
+    expect(link).toHaveAttribute('href', 'https://example.com/issue/7');
+    expect(logRequest).toMatchObject({ source: { branch: SHA }, limit: 1, withBody: true });
+  });
+
+  it('lists the changed files with their line counts and jumps to one', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderApp(url);
+    const summary = await screen.findByRole('navigation', { name: 'Files changed' });
+    expect(
+      within(summary).getByRole('button', { name: /src\/parser\.ts.*\+1/ }),
+    ).toBeInTheDocument();
+    await userEvent.setup().click(within(summary).getByRole('button', { name: /src\/parser\.ts/ }));
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('filters the files by name', async () => {
+    renderApp(url);
+    await screen.findByRole('region', { name: 'File src/parser.ts' });
+    await userEvent.setup().type(screen.getByRole('searchbox', { name: 'Filter files' }), 'logo');
+    expect(screen.queryByRole('region', { name: 'File src/parser.ts' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'File assets/logo.png' })).toBeInTheDocument();
+  });
+
+  it('collapses a file to its heading, and expands it again', async () => {
+    const user = userEvent.setup();
     renderApp(url);
     const modified = await screen.findByRole('region', { name: 'File src/parser.ts' });
     expect(modified).toHaveTextContent('let x = 1;');
-    expect(modified).toHaveTextContent('const x = 1;');
-    const binary = screen.getByRole('region', { name: 'File assets/logo.png' });
-    expect(binary).toHaveTextContent('Binary file');
+    await user.click(within(modified).getByRole('button', { name: 'Collapse src/parser.ts' }));
+    expect(modified).not.toHaveTextContent('let x = 1;');
+    await user.click(within(modified).getByRole('button', { name: 'Expand src/parser.ts' }));
+    expect(modified).toHaveTextContent('let x = 1;');
   });
 
   it('shows each file side by side by default and can switch to inline', async () => {
     renderApp(url);
     const modified = await screen.findByRole('region', { name: 'File src/parser.ts' });
-    const sideBy = modified.querySelector('[aria-pressed="true"]');
-    expect(sideBy).toHaveTextContent('Side by side');
+    expect(modified.querySelector('[aria-pressed="true"]')).toHaveTextContent('Side by side');
     await userEvent.setup().click(within(modified).getByRole('button', { name: 'Inline' }));
     expect(modified.querySelector('[aria-pressed="true"]')).toHaveTextContent('Inline');
+  });
+
+  it('opens the range from this commit down to the one typed', async () => {
+    const user = userEvent.setup();
+    const app = renderApp(url);
+    await screen.findByRole('heading', { name: /Tighten the parser/ });
+    await user.type(screen.getByRole('textbox', { name: 'Range end' }), BOTTOM);
+    await user.click(screen.getByRole('button', { name: 'Open range' }));
+    await waitFor(() => {
+      expect(app.location().pathname).toMatch(/\/log$/);
+    });
+    const params = new URLSearchParams(app.location().search);
+    expect(params.get('top')).toBe(SHA);
+    expect(params.get('bottom')).toBe(BOTTOM);
   });
 });

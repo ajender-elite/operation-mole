@@ -1,21 +1,26 @@
 import type { RepoInfo } from '@om/shared';
 import clsx from 'clsx';
 import {
+  ChevronDown,
   FileDiff,
   FolderTree,
   GitCommitHorizontal,
   GitPullRequestArrow,
+  History,
   LayoutDashboard,
   ListTree,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Route, Routes, useLocation, useNavigate } from 'react-router';
 import { shortSha } from '../lib/attribution.ts';
+import { MEDIA, useMediaQuery } from '../lib/media.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
 import { sourceFromParams, sourceLabel } from '../lib/sources.ts';
 import { sessionPath } from '../lib/urls.ts';
 import { WorkspaceContext, type Workspace } from '../lib/workspace-context.ts';
+import { HeaderSlotContext } from './header-slot.tsx';
 import {
   loadTabs,
   saveTabs,
@@ -28,6 +33,7 @@ import {
 } from '../lib/workspace.ts';
 import { CommitListPage } from '../pages/commits-page.tsx';
 import { CommitPage } from '../pages/commit-page.tsx';
+import { RangeLogPage } from '../pages/range-log-page.tsx';
 import { DirectoryComparePage } from '../pages/directory-compare-page.tsx';
 import { FileComparePage } from '../pages/file-compare-page.tsx';
 import { NotFoundPage } from '../pages/not-found-page.tsx';
@@ -105,21 +111,26 @@ function SessionTabs({ user, sessionId }: { user: string; sessionId: string }) {
     void navigate(next?.url ?? base, { state: { removeTab: id, isTakingPlace: false } });
   };
 
+  // In landscape on a phone the tab strip moves into the app header, so header and tabs share a row.
+  const headerSlot = useContext(HeaderSlotContext);
+  const isShort = useMediaQuery(MEDIA.short);
+  const strip =
+    tabs.length > 1 ? (
+      <TabStrip
+        tabs={tabs}
+        activeId={activeId}
+        base={base}
+        user={user}
+        sessionId={sessionId}
+        onSelect={(tab) => {
+          void navigate(tab.url);
+        }}
+        onClose={close}
+      />
+    ) : null;
   return (
     <WorkspaceContext.Provider value={workspace}>
-      {tabs.length > 1 && (
-        <TabStrip
-          tabs={tabs}
-          activeId={activeId}
-          base={base}
-          user={user}
-          sessionId={sessionId}
-          onSelect={(tab) => {
-            void navigate(tab.url);
-          }}
-          onClose={close}
-        />
-      )}
+      {strip !== null && isShort && headerSlot !== null ? createPortal(strip, headerSlot) : strip}
       <div className="relative min-h-0 flex-1">
         {tabs.map((tab) => {
           const isActive = tab.id === activeId;
@@ -133,6 +144,7 @@ function SessionTabs({ user, sessionId }: { user: string; sessionId: string }) {
                 <Route path="upstream" element={<UpstreamPage />} />
                 <Route path="commit" element={<CommitPage />} />
                 <Route path="commits" element={<CommitListPage />} />
+                <Route path="log" element={<RangeLogPage />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
             </TabPanel>
@@ -179,6 +191,7 @@ const kindIcon: Record<TabKind, typeof FolderTree> = {
   upstream: GitPullRequestArrow,
   commit: GitCommitHorizontal,
   commits: ListTree,
+  log: History,
 };
 
 /** A tab's name, from its URL and the session's repos (so it follows renames and fetches). */
@@ -204,11 +217,18 @@ function tabTitle(tab: WorkspaceTab, base: string, repos: RepoInfo[]): string {
     case 'commit':
       return `Commit ${shortSha(params.get('commit') ?? '')}`;
     case 'commits':
-      return params.get('side') === 'right' ? 'Target commits' : 'Base commits';
+      return params.get('side') === 'right' ? 'Right commits' : 'Left commits';
+    case 'log':
+      return `Log ${shortSha(params.get('top') ?? '')} → ${shortSha(params.get('bottom') ?? '')}`;
     case 'home':
     case undefined:
       return 'Overview';
   }
+}
+
+/** Whether a horizontal list still has tabs beyond its right edge. */
+function hasMoreAfter(list: HTMLElement): boolean {
+  return list.scrollWidth - list.scrollLeft - list.clientWidth > 1;
 }
 
 function TabStrip({
@@ -230,61 +250,160 @@ function TabStrip({
 }) {
   const session = useSessionDetail(user, sessionId);
   const repos = session.data?.repos ?? [];
+  const listRef = useRef<HTMLDivElement>(null);
+  const [isMoreAfter, setMoreAfter] = useState(false);
+  const [isMenuOpen, setMenuOpen] = useState(false);
+
+  // A fade on the right says there are more tabs to scroll to. Re-measured on resize and tab changes.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const update = () => {
+      setMoreAfter(hasMoreAfter(list));
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('resize', update);
+    };
+  }, [tabs.length]);
+
+  const entries = tabs.map((tab) => {
+    const title = tabTitle(tab, base, repos);
+    const path = new URLSearchParams(tab.url.split('?')[1] ?? '');
+    const fullPath = path.get('rightPath') ?? path.get('leftPath');
+    return {
+      tab,
+      title,
+      fullPath,
+      Icon: kindIcon[tabKind(tab.url, base) ?? 'home'],
+      isActive: tab.id === activeId,
+    };
+  });
+
   return (
-    <div
-      role="tablist"
-      aria-label="Open comparisons"
-      className="flex shrink-0 gap-px overflow-x-auto border-b border-line bg-canvas px-2 pt-1"
-    >
-      {tabs.map((tab) => {
-        const isActive = tab.id === activeId;
-        const title = tabTitle(tab, base, repos);
-        const Icon = kindIcon[tabKind(tab.url, base) ?? 'home'];
-        const path = new URLSearchParams(tab.url.split('?')[1] ?? '');
-        const fullPath = path.get('rightPath') ?? path.get('leftPath');
-        return (
-          <div
-            key={tab.id}
-            className={clsx(
-              'group flex max-w-64 shrink-0 items-center rounded-t-md border border-b-0 text-sm',
-              isActive
-                ? 'border-line bg-surface font-medium text-ink'
-                : 'border-transparent text-muted hover:bg-hover',
-            )}
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              aria-controls={`tab-${tab.id}`}
-              title={fullPath ?? title}
-              className="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1.5"
-              onClick={() => {
-                onSelect(tab);
-              }}
+    <div className="flex shrink-0 items-end gap-1 border-b border-line bg-canvas px-2 pt-1 short:min-w-0 short:flex-1 short:border-b-0 short:bg-transparent short:px-0 short:pt-0">
+      <div className="relative flex min-w-0 flex-1">
+        <div
+          role="tablist"
+          aria-label="Open comparisons"
+          ref={listRef}
+          className="flex min-w-0 flex-1 gap-px overflow-x-auto"
+          onScroll={(event) => {
+            setMoreAfter(hasMoreAfter(event.currentTarget));
+          }}
+        >
+          {entries.map(({ tab, title, fullPath, Icon, isActive }) => (
+            <div
+              key={tab.id}
+              className={clsx(
+                'group flex max-w-40 shrink-0 items-center rounded-t-md border border-b-0 text-sm sm:max-w-64',
+                isActive
+                  ? 'border-line bg-surface font-medium text-ink'
+                  : 'border-transparent text-muted hover:bg-hover',
+              )}
             >
-              <Icon className="size-3.5 shrink-0" aria-hidden />
-              <span className="truncate">{title}</span>
-            </button>
-            {tab.id !== 'home' && (
               <button
                 type="button"
-                aria-label={`Close ${title}`}
-                title="Close"
-                className={clsx(
-                  'mr-1 rounded p-0.5 hover:bg-hover hover:text-ink',
-                  !isActive && 'invisible group-focus-within:visible group-hover:visible',
-                )}
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`tab-${tab.id}`}
+                title={fullPath ?? title}
+                className="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1.5"
                 onClick={() => {
-                  onClose(tab.id);
+                  onSelect(tab);
                 }}
               >
-                <X className="size-3.5" aria-hidden />
+                <Icon className="size-3.5 shrink-0" aria-hidden />
+                <span className="truncate">{title}</span>
               </button>
-            )}
+              {tab.id !== 'home' && (
+                <button
+                  type="button"
+                  aria-label={`Close ${title}`}
+                  title="Close"
+                  className={clsx(
+                    'touch-target mr-1 rounded p-0.5 hover:bg-hover hover:text-ink',
+                    // A phone has no hover: inactive tabs keep their close button visible.
+                    !isActive &&
+                      'invisible group-focus-within:visible group-hover:visible coarse:visible',
+                  )}
+                  onClick={() => {
+                    onClose(tab.id);
+                  }}
+                >
+                  <X className="size-3.5" aria-hidden />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {isMoreAfter && (
+          <div
+            data-fade="end"
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-linear-to-l from-canvas to-transparent"
+          />
+        )}
+      </div>
+
+      <div className="relative shrink-0">
+        <button
+          type="button"
+          aria-haspopup="true"
+          aria-expanded={isMenuOpen}
+          className="touch-target flex items-center gap-1 rounded-t-md px-2 py-1 text-xs text-muted hover:bg-hover hover:text-ink"
+          onClick={() => {
+            setMenuOpen((open) => !open);
+          }}
+        >
+          Tabs <ChevronDown className="size-3.5" aria-hidden />
+        </button>
+        {isMenuOpen && (
+          <div
+            role="group"
+            aria-label="Open tabs"
+            className="absolute right-0 z-30 mt-1 flex max-h-[70vh] min-w-56 flex-col overflow-auto rounded-md border border-line bg-surface p-1 shadow-lg"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setMenuOpen(false);
+            }}
+          >
+            {entries.map(({ tab, title, fullPath, Icon, isActive }) => (
+              <div
+                key={tab.id}
+                className={clsx('flex items-center gap-1 rounded', isActive && 'bg-accent-soft')}
+              >
+                <button
+                  type="button"
+                  aria-label={`Switch to ${title}`}
+                  title={fullPath ?? title}
+                  className="touch-target flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-hover"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onSelect(tab);
+                  }}
+                >
+                  <Icon className="size-3.5 shrink-0" aria-hidden />
+                  <span className="truncate">{title}</span>
+                </button>
+                {tab.id !== 'home' && (
+                  <button
+                    type="button"
+                    aria-label={`Close ${title}`}
+                    title="Close"
+                    className="touch-target rounded p-1 text-muted hover:bg-hover hover:text-ink"
+                    onClick={() => {
+                      onClose(tab.id);
+                    }}
+                  >
+                    <X className="size-3.5" aria-hidden />
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
-        );
-      })}
+        )}
+      </div>
     </div>
   );
 }

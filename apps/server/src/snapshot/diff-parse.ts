@@ -58,7 +58,7 @@ export function parseHunks(patch: string, maxLines = Number.POSITIVE_INFINITY): 
 
 /**
  * One hunk covering a whole file that exists on one side only: every line is `removed`
- * (only in Base) or `added` (only in Target).
+ * (only in Left) or `added` (only in Right).
  */
 export function wholeFileHunk(text: string, side: 'left' | 'right', maxLines: number): ParsedHunks {
   const all = text.split('\n');

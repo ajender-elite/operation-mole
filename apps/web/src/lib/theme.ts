@@ -1,10 +1,9 @@
 import { useSyncExternalStore } from 'react';
 
-/** Color scheme of the app. */
+/** Color scheme of the app. Dark is the default (eye comfort; see docs/frontend.md). */
 export type Theme = 'light' | 'dark';
 
 const STORAGE_KEY = 'om-theme';
-const DARK_QUERY = '(prefers-color-scheme: dark)';
 const listeners = new Set<() => void>();
 
 function saved(): Theme | undefined {
@@ -16,9 +15,9 @@ function saved(): Theme | undefined {
   }
 }
 
-/** The explicit choice if one was made, otherwise the system preference. */
+/** The saved choice if there is one, otherwise dark. The system preference is not consulted. */
 export function getTheme(): Theme {
-  return saved() ?? (window.matchMedia(DARK_QUERY).matches ? 'dark' : 'light');
+  return saved() ?? 'dark';
 }
 
 /** Applies a theme (via `data-theme` on `<html>`), remembers it, and notifies {@link useTheme}. */
@@ -34,15 +33,12 @@ export function setTheme(theme: Theme): void {
 
 function subscribe(onChange: () => void) {
   listeners.add(onChange);
-  const mql = window.matchMedia(DARK_QUERY);
-  mql.addEventListener('change', onChange);
   return () => {
     listeners.delete(onChange);
-    mql.removeEventListener('change', onChange);
   };
 }
 
-/** Current theme; re-renders on toggle and on system preference changes. */
+/** Current theme; re-renders on toggle. */
 export function useTheme(): Theme {
   return useSyncExternalStore(subscribe, getTheme);
 }

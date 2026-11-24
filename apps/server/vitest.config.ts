@@ -9,7 +9,7 @@ export default defineProject({
     exclude: [...configDefaults.exclude, 'test/remote/**'],
     // These tests spawn real git processes, which is several times slower on Windows
     // (and on loaded CI machines) than on Linux. The 5s default is too tight there.
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
   },
 });

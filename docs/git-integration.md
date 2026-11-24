@@ -8,27 +8,24 @@ OM runs the machine's own `git` through [simple-git](https://github.com/steveukx
 
 ## Clones and branches
 
-| Step               | Command(s)                                                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| Clone              | `git clone --bare --filter=blob:none --quiet <url> <repoDir>`                                                       |
-| List branches      | `git for-each-ref --format=%(refname:short) refs/heads`, sorted by `compareNames`                                   |
-| Default branch     | `git symbolic-ref --short HEAD` (falls back to the first branch)                                                    |
-| Check out a branch | `git rev-parse --verify refs/heads/<b>^{commit}`, then `git worktree add --detach <dir> <sha>`                      |
-| Update a checkout  | if the worktree's `HEAD` isn't at the tip: `git checkout --force --detach <sha>` and `git clean -fdx`               |
-| Fetch latest       | `git fetch --prune origin +refs/heads/*:refs/heads/*`, then update `HEAD` from `git ls-remote --symref origin HEAD` |
+| Step             | Command(s)                                                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Clone            | `git clone --bare --filter=blob:none --quiet <url> <repoDir>`                                                       |
+| List branches    | `git for-each-ref --format=%(refname:short) refs/heads`, sorted by `compareNames`                                   |
+| Default branch   | `git symbolic-ref --short HEAD` (falls back to the first branch)                                                    |
+| Resolve a branch | `git rev-parse --verify refs/remotes/<remote>/<b>^{commit}` (then the remote's tags, then a SHA)                    |
+| Fetch latest     | `git fetch --prune origin +refs/heads/*:refs/heads/*`, then update `HEAD` from `git ls-remote --symref origin HEAD` |
 
 Notes:
 
-- **Bare and blob-less clones:** cloning only downloads history, and file contents arrive when a branch is checked out. Large repos stay quick to add, and one clone serves every branch.
-- **Detached worktrees:** each branch gets its own folder, so Base and Target can be two branches of the same repo at once. Worktrees are detached, so fetching can move any branch.
-- **Reuse:** a checkout already at the branch tip is used as is. Comparing again after a fetch moves it to the new tip.
+- **Bare and blob-less clones:** cloning only downloads history, and file contents arrive when an analysis needs them (in one batch per file, see `prefetchMissing`). Large repos stay quick to add, and one clone serves every branch and remote.
+- **No checkouts:** comparisons read the trees of the two commits, so Left and Right can be two branches of the same repo at once without a folder for each. Nothing is written to the working tree of any clone.
 - **Manual freshness:** nothing fetches on its own. Users click **Fetch latest** (in the Folders picker or the session overview).
 - **Long paths:** simple-git commands run with `-c core.longpaths=true`. Windows git otherwise refuses to check out paths over 260 characters (nginx has them); other systems ignore it. It's set per command, never written to the user's config.
-- **`.git` is hidden:** a worktree has a `.git` file at its root. It's skipped when comparing git sources, so it never shows as a difference.
 
 ## Analysis commands
 
-Diffs, blame, history and applicability run through `GitService.run`: git spawned directly (no shell) with the same environment allowlist, plus exit codes, abort signals and per-command environment, which simple-git doesn't expose. Every analysis command gets:
+Diffs, blame, history and merge-tree run through `GitService.run`: git spawned directly (no shell) with the same environment allowlist, plus exit codes, abort signals and per-command environment, which simple-git doesn't expose. Every analysis command gets:
 
 | Setting                                                                                                                    | Why                                                                               |
 | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -65,9 +62,9 @@ Setting `GIT_SSH_COMMAND` would override `core.sshCommand`, so at startup `confi
 
 ## Locking
 
-Analysis commands only read clones (and add fetched objects), so they don't take the per-repo lock and run in parallel, at most 8 git processes for reachability and 4 applicability evaluations at a time.
+`GitService` keeps one read/write lock per repo folder. Each analysis command takes the shared side for its own duration, so analysis runs in parallel. Fetch, remote removal and repo deletion take the exclusive side: they wait for running commands and block new ones until they finish. A prune therefore never deletes a pack that a command is reading. Reachability checks run at most 8 at a time.
 
-`RepoManager` runs at most one git operation at a time per `(session, repo URL)`: clone, fetch or checkout. Two quick compares or a fetch during a checkout therefore can't corrupt a repo. Different repos and sessions run in parallel.
+`RepoManager` runs at most one change at a time per `(session, repo URL)`: clone, fetch, remote changes or checkout. Different repos and sessions run in parallel.
 
 ## Security
 

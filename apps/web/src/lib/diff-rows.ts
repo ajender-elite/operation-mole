@@ -3,7 +3,7 @@ import type { DiffHunk, DiffLine } from '@om/shared';
 /** A line and its index within its hunk (the index is what a focused line points at). */
 export type IndexedLine = { line: DiffLine; index: number };
 
-/** One row of the side-by-side view: what Base shows and what Target shows at the same height. */
+/** One row of the side-by-side view: what Left shows and what Right shows at the same height. */
 export type AlignedRow = { left: IndexedLine | undefined; right: IndexedLine | undefined };
 
 /**

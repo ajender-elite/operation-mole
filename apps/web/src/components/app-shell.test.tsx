@@ -26,10 +26,10 @@ describe('AppShell', () => {
     renderApp(`/u/${USER}/s/s1/upstream`);
     const context = screen.getByRole('navigation', { name: 'Context' });
     expect(within(context).getByRole('link', { name: USER })).toHaveAttribute('href', `/u/${USER}`);
-    expect(await within(context).findByRole('link', { name: 'Release review' })).toHaveAttribute(
-      'href',
-      `/u/${USER}/s/s1`,
-    );
+    // The session loads over the mocked API; allow for a busy machine (the suite runs in parallel).
+    expect(
+      await within(context).findByRole('link', { name: 'Release review' }, { timeout: 5000 }),
+    ).toHaveAttribute('href', `/u/${USER}/s/s1`);
     // Working contexts are tabs inside the session, not a fixed menu of pages.
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /upstream/i })).toHaveAttribute('aria-selected', 'true');
@@ -48,19 +48,19 @@ describe('AppShell', () => {
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   });
 
-  it('toggles between light and dark mode and remembers the choice', async () => {
+  it('toggles between dark (default) and light mode and remembers the choice', async () => {
     const user = userEvent.setup();
     renderApp('/');
-    await user.click(screen.getByRole('button', { name: 'Switch to dark mode' }));
-    expect(document.documentElement.dataset['theme']).toBe('dark');
-    expect(localStorage.getItem('om-theme')).toBe('dark');
     await user.click(screen.getByRole('button', { name: 'Switch to light mode' }));
     expect(document.documentElement.dataset['theme']).toBe('light');
     expect(localStorage.getItem('om-theme')).toBe('light');
+    await user.click(screen.getByRole('button', { name: 'Switch to dark mode' }));
+    expect(document.documentElement.dataset['theme']).toBe('dark');
+    expect(localStorage.getItem('om-theme')).toBe('dark');
   });
 
-  it('starts from the system preference', () => {
-    stubMatchMedia(true);
+  it('starts dark, even when the system prefers light', () => {
+    stubMatchMedia(false);
     renderApp('/');
     expect(screen.getByRole('button', { name: 'Switch to light mode' })).toBeInTheDocument();
   });

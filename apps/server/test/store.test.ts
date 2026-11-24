@@ -1,6 +1,13 @@
+import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ConflictError } from '../src/errors.ts';
+import { SCHEMA_VERSION, applySchema } from '../src/store/schema.ts';
 import { Store } from '../src/store/store.ts';
+
+/*
+ * One user's database (users/<user>/user.db): sessions, their repos with remotes, and the analysis cache.
+ * Each test gets a fresh in-memory database, so nothing leaks between them.
+ */
 
 let store: Store;
 let tick: number;
@@ -19,53 +26,77 @@ const repoInput = (sessionId: string, url = 'https://example.com/acme/app.git') 
   branches: ['main', 'dev'],
 });
 
+describe('schema', () => {
+  it('creates the current version, with remotes and the analysis cache', () => {
+    const db = new DatabaseSync(':memory:');
+    applySchema(db);
+    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION });
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all()
+      .map((row) => row['name']);
+    expect(tables).toEqual(
+      expect.arrayContaining(['sessions', 'repos', 'remotes', 'analysis_cache']),
+    );
+    db.close();
+  });
+
+  it('applying the schema twice changes nothing', () => {
+    const db = new DatabaseSync(':memory:');
+    applySchema(db);
+    expect(() => {
+      applySchema(db);
+    }).not.toThrow();
+    db.close();
+  });
+
+  it('refuses a database written by a newer OM rather than guessing at it', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
+    expect(() => {
+      applySchema(db);
+    }).toThrow(/newer than this OM/);
+    db.close();
+  });
+});
+
 describe('sessions', () => {
-  it('creates and lists sessions per user, newest activity first', () => {
-    const a = store.createSession('karthik', 'First');
-    store.createSession('karthik', 'Second');
-    store.createSession('someone', 'Theirs');
+  it('creates and lists sessions, newest activity first', () => {
+    const a = store.createSession('First');
+    store.createSession('Second');
 
     expect(a).toMatchObject({ name: 'First', repoCount: 0 });
     expect(a.id).toMatch(/^[a-z0-9-]+$/);
-    expect(store.listSessions('karthik').map((s) => s.name)).toEqual(['Second', 'First']);
+    expect(store.listSessions().map((s) => s.name)).toEqual(['Second', 'First']);
 
-    store.touchSession('karthik', a.id);
-    expect(store.listSessions('karthik').map((s) => s.name)).toEqual(['First', 'Second']);
-    expect(store.listSessions('nobody')).toEqual([]);
+    store.touchSession(a.id);
+    expect(store.listSessions().map((s) => s.name)).toEqual(['First', 'Second']);
   });
 
-  it('rejects a duplicate session name for the same user, ignoring case', () => {
-    store.createSession('karthik', 'Review');
-    expect(() => store.createSession('karthik', 'review')).toThrow(ConflictError);
-    expect(() => store.createSession('other', 'Review')).not.toThrow();
+  it('rejects a duplicate session name, ignoring case', () => {
+    store.createSession('Review');
+    expect(() => store.createSession('review')).toThrow(ConflictError);
   });
 
-  it('only returns a session to its owner', () => {
-    const s = store.createSession('karthik', 'Mine');
-    expect(store.getSession('karthik', s.id)?.name).toBe('Mine');
-    expect(store.getSession('someone', s.id)).toBeUndefined();
+  it('finds a session by id, and reports nothing for an unknown one', () => {
+    const s = store.createSession('Mine');
+    expect(store.getSession(s.id)?.name).toBe('Mine');
+    expect(store.getSession('no-such-session')).toBeUndefined();
   });
 
-  it('deletes a session with its repos and comparisons', () => {
-    const s = store.createSession('karthik', 'Temp');
-    store.saveRepo(repoInput(s.id));
-    store.recordComparison(s.id, {
-      left: { type: 'path', path: '/a' },
-      right: { type: 'path', path: '/b' },
-      leftLabel: '/a',
-      rightLabel: '/b',
-    });
-    expect(store.deleteSession('someone', s.id)).toBe(false);
-    expect(store.deleteSession('karthik', s.id)).toBe(true);
-    expect(store.getSession('karthik', s.id)).toBeUndefined();
-    expect(store.listRepos(s.id)).toEqual([]);
-    expect(store.listComparisons(s.id)).toEqual([]);
+  it('deletes a session with its repos and remotes', () => {
+    const s = store.createSession('Temp');
+    const repo = store.saveRepo(repoInput(s.id));
+    expect(store.deleteSession('no-such-session')).toBe(false);
+    expect(store.deleteSession(s.id)).toBe(true);
+    expect(store.getSession(s.id)).toBeUndefined();
+    expect(store.getRepo(s.id, repo.id)).toBeUndefined();
   });
 });
 
 describe('repos', () => {
-  it('saves repos per session and counts them', () => {
-    const s = store.createSession('karthik', 'Repos');
+  it('saves repos per session with their origin URL, and counts them', () => {
+    const s = store.createSession('Repos');
     const repo = store.saveRepo(repoInput(s.id));
     expect(repo).toMatchObject({
       url: 'https://example.com/acme/app.git',
@@ -73,11 +104,11 @@ describe('repos', () => {
     });
     expect(store.getRepo(s.id, repo.id)).toEqual(repo);
     expect(store.findRepoByUrl(s.id, 'https://example.com/acme/app.git')?.id).toBe(repo.id);
-    expect(store.listSessions('karthik')[0]?.repoCount).toBe(1);
+    expect(store.listSessions()[0]?.repoCount).toBe(1);
   });
 
   it('updates an existing repo instead of duplicating it', () => {
-    const s = store.createSession('karthik', 'Repos');
+    const s = store.createSession('Repos');
     const first = store.saveRepo(repoInput(s.id));
     const second = store.saveRepo({
       ...repoInput(s.id),
@@ -91,42 +122,10 @@ describe('repos', () => {
   });
 
   it('keeps repos separate between sessions', () => {
-    const a = store.createSession('karthik', 'A');
-    const b = store.createSession('karthik', 'B');
+    const a = store.createSession('A');
+    const b = store.createSession('B');
     const repo = store.saveRepo(repoInput(a.id));
     expect(store.getRepo(b.id, repo.id)).toBeUndefined();
     expect(store.findRepoByUrl(b.id, repo.url)).toBeUndefined();
-  });
-});
-
-describe('recent comparisons', () => {
-  const cmp = (l: string, r: string) => ({
-    left: { type: 'path' as const, path: l },
-    right: { type: 'path' as const, path: r },
-    leftLabel: l,
-    rightLabel: r,
-  });
-
-  it('lists comparisons newest first and moves a repeated one to the top', () => {
-    const s = store.createSession('karthik', 'Recents');
-    store.recordComparison(s.id, cmp('/a', '/b'));
-    store.recordComparison(s.id, cmp('/c', '/d'));
-    store.recordComparison(s.id, cmp('/a', '/b'));
-    expect(store.listComparisons(s.id).map((c) => c.leftLabel)).toEqual(['/a', '/c']);
-  });
-
-  it('keeps only the 20 most recent', () => {
-    const s = store.createSession('karthik', 'Many');
-    for (let i = 0; i < 25; i++) store.recordComparison(s.id, cmp(`/l${i}`, '/r'));
-    const list = store.listComparisons(s.id);
-    expect(list).toHaveLength(20);
-    expect(list[0]?.leftLabel).toBe('/l24');
-  });
-
-  it('counts as session activity', () => {
-    const a = store.createSession('karthik', 'A');
-    store.createSession('karthik', 'B');
-    store.recordComparison(a.id, cmp('/x', '/y'));
-    expect(store.listSessions('karthik')[0]?.name).toBe('A');
   });
 });

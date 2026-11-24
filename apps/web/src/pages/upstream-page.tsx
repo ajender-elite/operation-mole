@@ -20,11 +20,14 @@ import {
 import { useState, type JSX, type KeyboardEvent, type ReactNode } from 'react';
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { CompareForm } from '../components/compare-form.tsx';
+import { Sheet } from '../components/sheet.tsx';
 import { shortSha } from '../lib/attribution.ts';
 import { daysAgo, formatDate } from '../lib/dates.ts';
 import { usePooledQueries, type PooledTask } from '../lib/pooled-queries.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
-import { sourceFromParams, sourcesSearch } from '../lib/sources.ts';
+import { MEDIA, useMediaQuery } from '../lib/media.ts';
+import { sessionPath } from '../lib/urls.ts';
+import { sourceFromParams, sourceLabel, sourcesSearch } from '../lib/sources.ts';
 import {
   applicabilityQuery,
   commitsQuery,
@@ -33,7 +36,6 @@ import {
   type CommitWindow,
   type UpstreamPair,
 } from '../lib/upstream.ts';
-import { sessionPath } from '../lib/urls.ts';
 
 /** Window parameters kept in the URL next to the two sources. */
 const WINDOW_PARAMS = ['limit', 'since', 'hide', 'fp'] as const;
@@ -79,8 +81,8 @@ export function LabRedirect(): JSX.Element {
 }
 
 /**
- * Upstream → downstream commit applicability. Upstream is the Base (`left*` in the URL),
- * downstream the Target (`right*`), so the same snapshots carry over from Folders.
+ * Upstream → downstream commit applicability. Upstream is the left side (`left*` in the URL),
+ * downstream the right side (`right*`), so the same snapshots carry over from Folders.
  */
 export function UpstreamPage(): JSX.Element {
   const [params] = useSearchParams();
@@ -94,24 +96,45 @@ export function UpstreamPage(): JSX.Element {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-2 border-b border-line bg-surface px-4 py-3">
-        <CompareForm
-          key={key}
-          initialLeft={upstream}
-          initialRight={downstream}
-          repos={session.data?.repos ?? []}
-          user={user}
-          sessionId={sessionId}
-          labels={['Upstream', 'Downstream']}
-          submitLabel="Analyze"
-          onSubmit={(l, r) => {
-            const next = new URLSearchParams(sourcesSearch(l, r));
-            for (const name of WINDOW_PARAMS) {
-              const value = params.get(name);
-              if (value !== null) next.set(name, value);
-            }
-            void navigate({ search: `?${next}` });
-          }}
-        />
+        {upstream && downstream ? (
+          // Once compared, the sources are fixed here (as on Folder Compare); a new comparison starts in the overview.
+          <div
+            role="group"
+            aria-label="Compared"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+          >
+            <span className="text-muted">Upstream</span>
+            <span className="font-mono">{sourceLabel(upstream, session.data?.repos ?? [])}</span>
+            <span aria-hidden>→</span>
+            <span className="text-muted">Downstream</span>
+            <span className="font-mono">{sourceLabel(downstream, session.data?.repos ?? [])}</span>
+            <Link
+              to={sessionPath(user, sessionId)}
+              className="ml-auto text-xs text-accent hover:underline"
+            >
+              New comparison
+            </Link>
+          </div>
+        ) : (
+          <CompareForm
+            key={key}
+            initialLeft={upstream}
+            initialRight={downstream}
+            repos={session.data?.repos ?? []}
+            user={user}
+            sessionId={sessionId}
+            labels={['Upstream', 'Downstream']}
+            submitLabel="Analyze"
+            onSubmit={(l, r) => {
+              const next = new URLSearchParams(sourcesSearch(l, r));
+              for (const name of WINDOW_PARAMS) {
+                const value = params.get(name);
+                if (value !== null) next.set(name, value);
+              }
+              void navigate({ search: `?${next}` });
+            }}
+          />
+        )}
         <p className="text-xs text-muted">
           What happens if each upstream commit is applied to the downstream snapshot? Every commit
           is applied <em>on its own</em> to the same, unmodified downstream commit with{' '}
@@ -249,25 +272,31 @@ function Analysis({ pair }: { pair: UpstreamPair }) {
             set({ commit: sha });
           }}
         />
-        <section
-          aria-label="Commit applicability"
-          className="min-h-0 flex-1 overflow-auto border-line lg:border-l"
+        <Sheet
+          title="Commit applicability"
+          isOpen={Boolean(selected && pinned)}
+          backLabel="Back to commits"
+          onClose={() => {
+            set({ commit: undefined });
+          }}
         >
-          {selected && pinned ? (
-            <CommitDetail
-              commit={selected}
-              result={results.get(selected.sha)}
-              failure={failures.get(selected.sha)}
-              pinned={pinned}
-              list={list.data}
-            />
-          ) : (
-            <p className="p-8 text-center text-muted">
-              Select an upstream commit to see what applying it to{' '}
-              <span className="font-mono">{list.data.downstreamLabel}</span> does, and why.
-            </p>
-          )}
-        </section>
+          <div className="min-h-0 flex-1 overflow-auto border-line lg:border-l">
+            {selected && pinned ? (
+              <CommitDetail
+                commit={selected}
+                result={results.get(selected.sha)}
+                failure={failures.get(selected.sha)}
+                pinned={pinned}
+                list={list.data}
+              />
+            ) : (
+              <p className="p-8 text-center text-muted">
+                Select an upstream commit to see what applying it to{' '}
+                <span className="font-mono">{list.data.downstreamLabel}</span> does, and why.
+              </p>
+            )}
+          </div>
+        </Sheet>
       </div>
     </div>
   );
@@ -284,6 +313,25 @@ function WindowBar({
   isFetching: boolean;
   onChange: (changes: Record<string, string | undefined>) => void;
 }) {
+  // In landscape the window settings fold into one line, so the commit list keeps the height.
+  const isShort = useMediaQuery(MEDIA.short);
+  const [isWindowOpen, setWindowOpen] = useState(false);
+  if (isShort && !isWindowOpen) {
+    return (
+      <div className="flex items-center gap-2 border-b border-line bg-surface px-4 py-1 text-sm">
+        <button
+          type="button"
+          aria-expanded={false}
+          className="touch-target rounded px-1.5 py-0.5 text-muted hover:bg-hover"
+          onClick={() => {
+            setWindowOpen(true);
+          }}
+        >
+          Window: last {window.limit} commits
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 text-sm">
       <label className="flex items-center gap-1.5">
@@ -783,8 +831,8 @@ function Hunks({ hunks }: { hunks: DiffHunk[] }) {
               key={j}
               className={clsx(
                 'whitespace-pre px-2',
-                l.kind === 'removed' && 'bg-left-soft',
-                l.kind === 'added' && 'bg-right-soft',
+                l.kind === 'removed' && 'bg-side-left-soft',
+                l.kind === 'added' && 'bg-side-right-soft',
               )}
             >
               {l.kind === 'removed' ? '−' : l.kind === 'added' ? '+' : ' '} {l.text}

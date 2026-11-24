@@ -1,14 +1,16 @@
 # Comparison rules
 
-Code: `apps/server/src/compare/` (`compare-directories.ts`, `files-equal.ts`, `sort.ts`). Each rule is covered by `test/compare-directories.test.ts` and `test/sort.test.ts` (temp folders built per test), and on a real repository by `test/nginx-branches.test.ts`.
+Code: `apps/server/src/compare/` (`git-trees.ts` for the folder tree, `summary.ts` for the counts, `sort.ts` for the order). Each rule is covered by `test/tree-compare-rules.test.ts` (leaf maps, no disk), `test/git-directory-compare.test.ts` (real git trees), `test/sort.test.ts`, and on a real repository by `test/nginx-branches.test.ts`.
+
+The rules apply to the trees of two git sides. Nothing is compared on disk: a file is identical when its object id is, which is the byte content.
 
 ## Matching
 
-Entries are matched by **relative path**: `src/a.ts` on the base side is compared with `src/a.ts` on the target side. Files with different names are never paired as one entry, except git renames (below).
+Entries are matched by **relative path**: `src/a.ts` on the left side is compared with `src/a.ts` on the right side. Files with different names are never paired as one entry, except git renames (below).
 
 ### Renames (git sides only)
 
-When both sides are git snapshots, OM asks git which files were renamed between the two commits (`git diff -M --diff-filter=R`). The tree still lists the old name as only-in-base and the new name as only-in-target, but links them: `renamedTo`/`renamedFrom` plus git's similarity percentage. The UI shows "renamed → new/path (92%)" and diffs the pair as one file. Summary counts are unchanged. Folder sources get no rename detection (no history to ask).
+OM asks git which files were renamed between the two commits (`git diff -M --diff-filter=R`). The tree still lists the old name as only-in-left and the new name as only-in-right, but links them: `renamedTo`/`renamedFrom` plus git's similarity percentage. The UI shows "renamed → new/path (92%)" and diffs the pair as one file. Summary counts are unchanged.
 
 ## Statuses
 
@@ -16,8 +18,8 @@ When both sides are git snapshots, OM asks git which files were renamed between 
 | ------------ | ------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------- |
 | `identical`  | Same bytes (symlinks: same target)                                        | Present on both sides and **everything inside** identical | default color                         |
 | `modified`   | Different bytes or size (symlinks: different target; a symlink vs a file) | Present on both sides with a difference somewhere inside  | orange row; folders get an orange dot |
-| `only-left`  | Only in base                                                              | Only in base (and so is everything inside)                | green                                 |
-| `only-right` | Only in target                                                            | Only in target                                            | blue                                  |
+| `only-left`  | Only in left                                                              | Only in left (and so is everything inside)                | green                                 |
+| `only-right` | Only in right                                                             | Only in right                                             | blue                                  |
 | `error`      | Couldn't be read (e.g. permissions)                                       | Couldn't be listed                                        | red, with the error message           |
 
 Details:
@@ -53,14 +55,6 @@ Only the server sorts; the UI keeps the order it receives. The locale is fixed t
 
 The summary counts **files and symlinks** by status, including those inside one-sided folders. Folders aren't counted, since they only collect their contents' statuses. A file/folder name clash counts the file as one-sided. Unreadable entries count as errors.
 
-## Snapshot file diff (git sides, in Folders)
+## File diff (git sides)
 
-For two git snapshots, opening a file shows **git's own hunks** for that file between the two commits (`git diff` of the two blobs), read Base → Target, with each changed line attributed. A rename pair is diffed as one file; a one-sided file is one hunk of only `−` or only `+` lines. Binary files (same NUL rule) and text over 5 MB get no hunks. See [investigation model](investigation-model.md).
-
-## File diff (`GET /api/compare/files`)
-
-The API still diffs two local files; the web app no longer has a page for it.
-
-- **Binary:** a NUL byte in the first 8 KB, the same rule git uses. Binary files show size and SHA-256 instead of a diff.
-- **Text:** shown up to 5 MB; larger files show a summary.
-- **Identical:** the same byte comparison as above.
+For two git snapshots, opening a file shows **git's own hunks** for that file between the two commits (`git diff` of the two blobs), read Left → Right. Attribution is asked for separately (see the investigation model). A rename pair is diffed as one file; a one-sided file is one hunk of only `−` or only `+` lines. Binary files (same NUL rule) and text over 5 MB get no hunks. See [investigation model](investigation-model.md).

@@ -1,8 +1,12 @@
 import type { ApplicabilityResult, GitSource, UpstreamCommitList } from '@om/shared';
 import { queryOptions } from '@tanstack/react-query';
-import { applicability, commitPatch, upstreamCommits } from './api.ts';
+import { gitShow } from './api.ts';
+import { loadApplicability } from './applicability.ts';
+import { loadCommitWindow } from './upstream-window.ts';
 
-/** Upstream (Base, `left`) and downstream (Target, `right`) git snapshots in a session. */
+export { loadCommitWindow };
+
+/** Upstream (`left`) and downstream (`right`) git snapshots in a session. */
 export type UpstreamPair = {
   user: string;
   sessionId: string;
@@ -19,7 +23,7 @@ export type CommitWindow = {
   firstParent: boolean;
 };
 
-/** The upstream commit window (`POST /api/upstream/commits`). */
+/** The upstream commit window, composed from git primitives (see upstream-window.ts). */
 export function commitsQuery(
   pair: UpstreamPair,
   window: CommitWindow,
@@ -30,17 +34,7 @@ export function commitsQuery(
 const buildCommitsQuery = (pair: UpstreamPair, window: CommitWindow) =>
   queryOptions({
     queryKey: ['upstream-commits', pair, window] as const,
-    queryFn: ({ signal }): Promise<UpstreamCommitList> =>
-      upstreamCommits(
-        {
-          ...pair,
-          limit: window.limit,
-          ...(window.since === undefined ? {} : { since: window.since }),
-          hideReachable: window.hideReachable,
-          firstParent: window.firstParent,
-        },
-        signal,
-      ),
+    queryFn: ({ signal }): Promise<UpstreamCommitList> => loadCommitWindow(pair, window, signal),
     staleTime: Infinity,
   });
 
@@ -75,7 +69,7 @@ const buildApplicabilityQuery = (pinned: UpstreamPair, commit: string) =>
       commit,
     ] as const,
     queryFn: ({ signal }): Promise<ApplicabilityResult> =>
-      applicability({ ...pinned, commit }, signal),
+      loadApplicability(pinned, commit, signal),
     staleTime: Infinity,
   });
 
@@ -97,8 +91,12 @@ const buildPatchQuery = (pinned: UpstreamPair, commit: string) =>
       commit,
     ] as const,
     queryFn: ({ signal }) =>
-      commitPatch(
-        { user: pinned.user, sessionId: pinned.sessionId, upstream: pinned.upstream, commit },
+      gitShow(
+        {
+          user: pinned.user,
+          sessionId: pinned.sessionId,
+          source: { ...pinned.upstream, branch: commit },
+        },
         signal,
       ),
     staleTime: Infinity,

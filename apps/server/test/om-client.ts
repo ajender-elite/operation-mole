@@ -1,19 +1,12 @@
 import type {
-  ApplicabilityRequest,
-  ApplicabilityResult,
-  CommitPatch,
-  DirectoryCompareResult,
+  FolderComparison,
+  GitCompareTrees,
   GitSource,
   RepoInfo,
   SnapshotFileDiff,
-  SnapshotFileDiffRequest,
-  UpstreamCommitList,
-  UpstreamCommitsRequest,
 } from '@om/shared';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { expect } from 'vitest';
-
-type Distribute<T> = T extends unknown ? Omit<T, 'user' | 'sessionId'> : never;
 
 /** Calls OM's HTTP API in tests (through `app.inject`) for one user's session. */
 export class OmClient {
@@ -30,6 +23,19 @@ export class OmClient {
     const res = await this.app.inject({ method: 'POST', url, payload: payload as object });
     expect(res.statusCode, res.body).toBe(status);
     return res.json<T>();
+  }
+
+  /**
+   * Uses this user's session of that name, creating it on first use. For data that a test run keeps
+   * between runs (a clone made once per machine).
+   */
+  async startOrResume(name: string): Promise<this> {
+    const res = await this.app.inject({ method: 'GET', url: `/api/users/${this.user}/sessions` });
+    expect(res.statusCode, res.body).toBe(200);
+    const existing = res.json<Array<{ id: string; name: string }>>().find((s) => s.name === name);
+    if (existing === undefined) return await this.start(name);
+    this.sessionId = existing.id;
+    return this;
   }
 
   /** Creates a session and remembers its id. */
@@ -57,49 +63,38 @@ export class OmClient {
     return { type: 'git', repoId: repo.id, branch: ref };
   }
 
-  compare(left: GitSource, right: GitSource): Promise<DirectoryCompareResult> {
-    return this.#post('/api/compare/directories', {
+  /** Folder Compare of two git sides: the folder tree (from `compare-trees`). */
+  async compare(left: GitSource, right: GitSource): Promise<FolderComparison> {
+    const trees = await this.#post<GitCompareTrees>('/api/git/compare-trees', {
       left,
       right,
       user: this.user,
       sessionId: this.sessionId,
     });
+    return trees.folder;
   }
 
-  fileDiff(body: Distribute<SnapshotFileDiffRequest>): Promise<SnapshotFileDiff> {
-    return this.#post('/api/snapshot/file-diff', {
-      ...body,
+  /** One file's hunks between two git sides, from `POST /api/git/diff` (the file pair's only entry). */
+  async fileDiff(body: {
+    left: GitSource;
+    right: GitSource;
+    leftPath?: string;
+    rightPath?: string;
+    fullFile?: boolean;
+  }): Promise<SnapshotFileDiff> {
+    const res = await this.#post<{ files: SnapshotFileDiff[] }>('/api/git/diff', {
+      left: body.left,
+      right: body.right,
+      files: [{ leftPath: body.leftPath, rightPath: body.rightPath }],
+      fullFile: body.fullFile ?? false,
       user: this.user,
       sessionId: this.sessionId,
     });
+    const [file] = res.files;
+    if (file === undefined) throw new Error('the diff has no file');
+    return file;
   }
 
-  commits(body: Distribute<UpstreamCommitsRequest>): Promise<UpstreamCommitList> {
-    return this.#post('/api/upstream/commits', {
-      ...body,
-      user: this.user,
-      sessionId: this.sessionId,
-    });
-  }
-
-  applicability(body: Distribute<ApplicabilityRequest>): Promise<ApplicabilityResult> {
-    return this.#post('/api/upstream/applicability', {
-      ...body,
-      user: this.user,
-      sessionId: this.sessionId,
-    });
-  }
-
-  patch(upstream: GitSource, commit: string): Promise<CommitPatch> {
-    return this.#post('/api/upstream/patch', {
-      upstream,
-      commit,
-      user: this.user,
-      sessionId: this.sessionId,
-    });
-  }
-
-  /** Raw response, for error cases. */
   inject(url: string, payload: object): Promise<LightMyRequestResponse> {
     return this.app.inject({
       method: 'POST',

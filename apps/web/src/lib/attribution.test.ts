@@ -67,7 +67,7 @@ describe('diffTarget / differingFiles', () => {
     ]);
   });
 
-  it('diffs the Target end of a rename against its Base path', () => {
+  it('diffs the Right end of a rename against its Left path', () => {
     expect(diffTarget(dir.children![3]!)).toEqual({
       key: 'd/old',
       leftPath: 'd/old',

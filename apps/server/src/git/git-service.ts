@@ -1,11 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DEFAULT_REMOTE } from '@om/shared';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { compareNames } from '../compare/sort.ts';
 import { CompareInputError, errorMessage } from '../errors.ts';
+import { ReadWriteLock } from './repo-lock.ts';
 
 /** Output of {@link GitService.run}. */
 export type GitRun = {
@@ -39,6 +40,17 @@ export class GitCommandError extends Error {
  * Settings passed to every analysis command so that git's output has the shape OM parses,
  * whatever the machine's config says. They only affect formatting, never credentials.
  */
+/** Attempts for a read that Windows refused because a pack file was locked, and the first pause (then x2, x3). */
+const PACK_LOCK_ATTEMPTS = 4;
+const PACK_LOCK_DELAY_MS = 200;
+
+/** Windows can refuse to open a pack file while a scanner or another git process holds it. */
+function isPackLockError(err: unknown): boolean {
+  return (
+    err instanceof GitCommandError && /unable to open .*.pack: Permission denied/.test(err.message)
+  );
+}
+
 const ANALYSIS_ARGS = [
   // Paths from requests are literal paths, never pathspec magic like `:(exclude)`.
   '--literal-pathspecs',
@@ -173,6 +185,14 @@ export function gitEnvironment(
 const SCP_LIKE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+$/;
 
 /** First meaningful line of a git error, without the "fatal:" prefix. */
+/**
+ * Removes the user and password from any URL in git's message, so a credential never reaches the
+ * response (git echoes the URL it could not reach).
+ */
+export function redactCredentials(text: string): string {
+  return text.replace(/\/\/[^/@\s'"]+@/g, '//');
+}
+
 function gitError(err: unknown): string {
   const line = errorMessage(err)
     .split('\n')
@@ -185,10 +205,12 @@ function gitError(err: unknown): string {
 }
 
 /**
- * Clones and checks out repos with the machine's own git (so its SSH keys and
- * credential helpers work). Each repo is a bare, blob-less clone; each branch
- * is checked out into its own worktree folder.
+ * Clones and reads repos with the machine's own git (so its SSH keys and
+ * credential helpers work). Each repo is one bare, blob-less clone holding all its remotes.
  */
+/** The name of a repo's first remote, given by its clone. */
+export const PRIMARY_REMOTE = DEFAULT_REMOTE;
+
 export class GitService {
   readonly #allowed: string[];
   readonly #env: Record<string, string>;
@@ -196,6 +218,26 @@ export class GitService {
   constructor(options: GitServiceOptions = {}) {
     this.#allowed = options.allowedProtocols ?? ['https', 'ssh'];
     this.#env = gitEnvironment(process.env, this.#allowed, configuredSshCommand());
+  }
+
+  /** The URL schemes git may use for remotes (`GIT_ALLOW_PROTOCOL`). */
+  get allowedProtocols(): string[] {
+    return [...this.#allowed];
+  }
+
+  /** Whether an SSH agent is reachable by git (`SSH_AUTH_SOCK` is set). Never the socket itself. */
+  sshAgentAvailable(): boolean {
+    const socket = process.env['SSH_AUTH_SOCK'];
+    return socket !== undefined && socket !== '';
+  }
+
+  /** The version of the git the server runs, as git prints it (e.g. `2.47.0.windows.2`). */
+  async version(): Promise<string> {
+    const { stdout } = await this.run(tmpdir(), ['--version']);
+    const match = /git version (\S+)/.exec(stdout);
+    if (match?.[1] === undefined)
+      throw new Error(`Unexpected output from git --version: ${stdout}`);
+    return match[1];
   }
 
   /**
@@ -215,6 +257,29 @@ export class GitService {
     cwd: string,
     args: readonly string[],
     options: GitRunOptions = {},
+  ): Promise<{ stdout: Buffer; exitCode: number }> {
+    // Shared with other analysis commands; a write to the same repo (see exclusive) waits for it.
+    return this.#lockFor(cwd).read(async () => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await this.#runBufferOnce(cwd, args, options);
+        } catch (err) {
+          const isRetryable =
+            attempt < PACK_LOCK_ATTEMPTS &&
+            isPackLockError(err) &&
+            options.signal?.aborted !== true;
+          if (!isRetryable) throw err;
+          // A scanner or another git process holds the pack for a moment; a retry reads it fine.
+          await new Promise((resolve) => setTimeout(resolve, PACK_LOCK_DELAY_MS * attempt));
+        }
+      }
+    });
+  }
+
+  #runBufferOnce(
+    cwd: string,
+    args: readonly string[],
+    options: GitRunOptions,
   ): Promise<{ stdout: Buffer; exitCode: number }> {
     const { env = {}, signal, okExitCodes = [0], maxBytes = DEFAULT_MAX_BYTES } = options;
     return new Promise((resolve, reject) => {
@@ -266,13 +331,13 @@ export class GitService {
   }
 
   /**
-   * The full commit SHA for `rev`: a branch, then a tag, then a (possibly abbreviated) commit id.
-   * Branches win over tags with the same name, as they do for comparisons everywhere else in OM.
+   * The full commit SHA for `rev` as `remote` has it: a branch of that remote, then a tag it
+   * fetched, then a (possibly abbreviated) commit id.
    *
    * @throws CompareInputError when nothing matches.
    */
-  async resolveCommit(repoDir: string, rev: string): Promise<string> {
-    const candidates = [`refs/heads/${rev}`, `refs/tags/${rev}`];
+  async resolveCommit(repoDir: string, rev: string, remote: string): Promise<string> {
+    const candidates = [`refs/remotes/${remote}/${rev}`, `refs/remote-tags/${remote}/${rev}`];
     if (/^[0-9a-f]{4,64}$/i.test(rev)) candidates.push(rev.toLowerCase());
     const git = this.#git(repoDir);
     for (const candidate of rev.startsWith('-') ? [] : candidates) {
@@ -281,22 +346,45 @@ export class GitService {
       ).trim();
       if (sha !== '') return sha;
     }
-    throw new CompareInputError(`Branch "${rev}" not found. Try fetching the latest.`);
+    throw new CompareInputError(`Branch "${rev}" not found in ${remote}. Try fetching the latest.`);
   }
 
-  /** Whether a clone is blob-less (its origin is a promisor remote), cached per clone. */
-  readonly #isPartial = new Map<string, Promise<boolean>>();
+  /** Whether a remote of the repo is a promisor (a blob-less clone or fetch from it), cached per remote. */
+  readonly #isPromisor = new Map<string, Promise<boolean>>();
 
-  async #isPartialClone(repoDir: string): Promise<boolean> {
-    let answer = this.#isPartial.get(repoDir);
+  /** One read/write lock per repo folder (see {@link exclusive}). */
+  readonly #locks = new Map<string, ReadWriteLock>();
+
+  #lockFor(repoDir: string): ReadWriteLock {
+    const key = path.resolve(repoDir);
+    let lock = this.#locks.get(key);
+    if (lock === undefined) {
+      lock = new ReadWriteLock();
+      this.#locks.set(key, lock);
+    }
+    return lock;
+  }
+
+  /**
+   * Runs `task` with no analysis command in flight on this repo, and none starting until it
+   * ends. Writes that change packs or refs (fetch, remove a remote's objects) use it, so a prune
+   * never deletes a pack a git command is reading. Analysis commands take the shared side.
+   */
+  exclusive<T>(repoDir: string, task: () => Promise<T>): Promise<T> {
+    return this.#lockFor(repoDir).write(task);
+  }
+
+  async #isPromisorRemote(repoDir: string, remote: string): Promise<boolean> {
+    const key = `${repoDir}\n${remote}`;
+    let answer = this.#isPromisor.get(key);
     if (answer === undefined) {
-      answer = this.run(repoDir, ['config', '--get', 'remote.origin.promisor'], {
+      answer = this.run(repoDir, ['config', '--get', `remote.${remote}.promisor`], {
         okExitCodes: [0, 1],
       }).then(
         ({ stdout }) => stdout.trim() === 'true',
         () => false,
       );
-      this.#isPartial.set(repoDir, answer);
+      this.#isPromisor.set(key, answer);
     }
     return await answer;
   }
@@ -313,9 +401,13 @@ export class GitService {
     repoDir: string,
     revs: readonly string[],
     paths: readonly string[],
-    { isWalking = true, signal }: { isWalking?: boolean; signal?: AbortSignal } = {},
+    {
+      isWalking = true,
+      signal,
+      remote = PRIMARY_REMOTE,
+    }: { isWalking?: boolean; signal?: AbortSignal; remote?: string } = {},
   ): Promise<void> {
-    if (paths.length === 0 || !(await this.#isPartialClone(repoDir))) return;
+    if (paths.length === 0 || !(await this.#isPromisorRemote(repoDir, remote))) return;
     const opt = signal ? { signal } : {};
     try {
       const { stdout } = await this.run(
@@ -347,7 +439,7 @@ export class GitService {
             '--no-write-fetch-head',
             '--recurse-submodules=no',
             '--filter=blob:none',
-            'origin',
+            remote,
             ...missing.slice(i, i + PREFETCH_BATCH),
           ],
           opt,
@@ -364,7 +456,9 @@ export class GitService {
     return simpleGit({
       baseDir: dir,
       allowEnvironment: GIT_ENV,
-      config: ['core.longpaths=true'],
+      // No automatic repacking behind a clone or fetch: a background gc rewrites the packs that
+      // analysis is reading at that moment (Windows refuses the rewrite and the read fails).
+      config: ['core.longpaths=true', 'gc.auto=0', 'gc.autoDetach=false', 'maintenance.auto=false'],
     }).env(this.#env);
   }
 
@@ -394,71 +488,139 @@ export class GitService {
     return last.replace(/\.git$/, '') || url;
   }
 
+  /**
+   * Creates the bare, blob-less repository at `dir`, with `origin` as its first remote. Returns the
+   * remote's branches and default branch.
+   */
   async clone(url: string, dir: string): Promise<BranchList> {
     this.validateUrl(url);
-    await mkdir(path.dirname(dir), { recursive: true });
+    await mkdir(dir, { recursive: true });
     try {
-      await this.#git(path.dirname(dir)).clone(url, dir, [
-        '--bare',
-        '--filter=blob:none',
-        '--quiet',
-      ]);
+      await this.#git(dir).init(true);
+      return await this.#connect(dir, PRIMARY_REMOTE, url, 'clone');
     } catch (err) {
-      await rm(dir, { recursive: true, force: true });
-      throw new CompareInputError(`Could not clone ${url}: ${gitError(err)}`);
+      await rm(dir, { recursive: true, force: true, maxRetries: 5 });
+      throw err;
     }
-    return await this.branches(dir);
   }
 
-  async branches(dir: string): Promise<BranchList> {
+  /**
+   * Adds `name` as a remote of an existing repo, and fetches its branches and tags. Its branches are
+   * kept apart from every other remote's (`refs/remotes/<name>/`), so the same branch name can mean
+   * a different commit on each.
+   */
+  addRemote(dir: string, name: string, url: string): Promise<BranchList> {
+    return this.exclusive(dir, () => this.#addRemote(dir, name, url));
+  }
+
+  async #addRemote(dir: string, name: string, url: string): Promise<BranchList> {
+    this.validateUrl(url);
+    return await this.#connect(dir, name, url, 'add');
+  }
+
+  /** Adds a remote (replacing a stale one of the same name) and fetches its branches and tags. */
+  async #connect(
+    dir: string,
+    name: string,
+    url: string,
+    purpose: 'clone' | 'add',
+  ): Promise<BranchList> {
     const git = this.#git(dir);
-    const refs = await git.raw(['for-each-ref', '--format=%(refname:short)', 'refs/heads']);
-    const branches = refs.split('\n').filter(Boolean).sort(compareNames);
-    let defaultBranch = (await git.raw(['symbolic-ref', '--short', 'HEAD']).catch(() => '')).trim();
+    try {
+      // A name left by an interrupted add is replaced, so the add can be retried.
+      await git.raw(['remote', 'remove', name]).catch(() => undefined);
+      await git.raw(['remote', 'add', name, url]);
+      // The fetch with a filter makes this remote a promisor: blobs are fetched on demand.
+      await git.raw([
+        'fetch',
+        '--quiet',
+        '--no-tags',
+        '--no-write-fetch-head',
+        '--filter=blob:none',
+        name,
+      ]);
+      await this.#fetchTags(dir, name);
+    } catch (err) {
+      throw new CompareInputError(`Could not ${purpose} ${url}: ${gitError(err)}`);
+    }
+    return await this.remoteBranches(dir, name);
+  }
+
+  async #fetchTags(dir: string, name: string): Promise<void> {
+    await this.#git(dir).raw([
+      'fetch',
+      '--quiet',
+      '--prune',
+      '--no-tags',
+      '--no-write-fetch-head',
+      name,
+      `+refs/tags/*:refs/remote-tags/${name}/*`,
+    ]);
+  }
+
+  /** One remote's branches, and its default branch (its HEAD, when that is one of its branches). */
+  async remoteBranches(dir: string, name: string): Promise<BranchList> {
+    const git = this.#git(dir);
+    const prefix = `refs/remotes/${name}/`;
+    const refs = await git.raw(['for-each-ref', '--format=%(refname)', `refs/remotes/${name}`]);
+    const branches = refs
+      .split('\n')
+      .filter((ref) => ref.startsWith(prefix))
+      .map((ref) => ref.slice(prefix.length))
+      .sort(compareNames);
+    const head = await git.raw(['ls-remote', '--symref', name, 'HEAD']).catch(() => '');
+    const match = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(head);
+    let defaultBranch = match?.[1] ?? '';
     if (!branches.includes(defaultBranch)) defaultBranch = branches[0] ?? '';
     return { defaultBranch, branches };
   }
 
-  /** Updates all branches from the remote (removing deleted ones) and its default branch. */
-  async fetch(dir: string): Promise<BranchList> {
+  /**
+   * Whether a remote answers now, with the same environment and no prompts as every other git call.
+   * `ls-remote` reads only; it writes nothing to the clone. A failure carries git's reason.
+   */
+  async checkRemote(dir: string, name: string): Promise<{ reachable: boolean; message: string }> {
+    try {
+      await this.#git(dir).raw(['ls-remote', '--heads', name]);
+      return { reachable: true, message: '' };
+    } catch (err) {
+      return { reachable: false, message: redactCredentials(gitError(err)) };
+    }
+  }
+
+  /** Updates one remote's branches (removing deleted ones) and its tags. The others are untouched. */
+  fetchRemote(dir: string, name: string): Promise<BranchList> {
+    return this.exclusive(dir, () => this.#fetchRemote(dir, name));
+  }
+
+  async #fetchRemote(dir: string, name: string): Promise<BranchList> {
     const git = this.#git(dir);
     try {
-      await git.raw(['fetch', '--prune', '--quiet', 'origin', '+refs/heads/*:refs/heads/*']);
-      const head = await git.raw(['ls-remote', '--symref', 'origin', 'HEAD']);
-      const match = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(head);
-      const defaultBranch = match?.[1];
-      if (defaultBranch !== undefined && defaultBranch !== '') {
-        await git.raw(['symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
-      }
+      await git.raw(['fetch', '--prune', '--quiet', '--no-tags', '--no-write-fetch-head', name]);
+      await this.#fetchTags(dir, name);
     } catch (err) {
-      throw new CompareInputError(`Could not fetch: ${gitError(err)}`);
+      throw new CompareInputError(`Could not fetch ${name}: ${gitError(err)}`);
     }
-    return await this.branches(dir);
+    return await this.remoteBranches(dir, name);
   }
 
   /**
-   * Ensures `worktreeDir` holds the commit `branch` resolves to (a branch tip, a tag or a
-   * commit; see {@link resolveCommit}); returns the folder.
+   * Removes a remote from the repo: its branches, its tags and its configuration. Then prunes the
+   * objects only it referenced, under the caller's lock.
    */
-  async checkout(repoDir: string, branch: string, worktreeDir: string): Promise<string> {
-    const repo = this.#git(repoDir);
-    const sha = await this.resolveCommit(repoDir, branch);
+  removeRemote(dir: string, name: string): Promise<void> {
+    return this.exclusive(dir, () => this.#removeRemote(dir, name));
+  }
 
-    if (existsSync(worktreeDir)) {
-      const wt = this.#git(worktreeDir);
-      const head = (await wt.revparse(['HEAD']).catch(() => '')).trim();
-      if (head === sha) return worktreeDir;
-      if (head) {
-        await wt.raw(['checkout', '--quiet', '--force', '--detach', sha]);
-        await wt.raw(['clean', '-f', '-d', '-x', '-q']);
-        return worktreeDir;
-      }
-      // Not a working checkout (e.g. interrupted): start over.
-      await rm(worktreeDir, { recursive: true, force: true });
-    }
-    await mkdir(path.dirname(worktreeDir), { recursive: true });
-    await repo.raw(['worktree', 'prune']);
-    await repo.raw(['worktree', 'add', '--quiet', '--detach', '--force', worktreeDir, sha]);
-    return worktreeDir;
+  async #removeRemote(dir: string, name: string): Promise<void> {
+    const git = this.#git(dir);
+    const tags = (
+      await git.raw(['for-each-ref', '--format=%(refname)', `refs/remote-tags/${name}`])
+    )
+      .split('\n')
+      .filter(Boolean);
+    await git.raw(['remote', 'remove', name]);
+    for (const tag of tags) await git.raw(['update-ref', '-d', tag]);
+    await git.raw(['gc', '--prune=now', '--quiet']);
   }
 }
