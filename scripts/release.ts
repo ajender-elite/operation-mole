@@ -14,6 +14,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { writeZip } from './zip-archive.ts';
 
 const ROOT = path.join(import.meta.dirname, '..');
 const RELEASES = path.join(ROOT, 'releases');
@@ -119,6 +120,21 @@ Nothing to install or build. From this folder:
 It listens on port 49991 on every network interface, so other machines on your network can open it at
 http://<this machine>:49991, and this one at http://127.0.0.1:49991. Only run it on a network you trust:
 anyone who can reach OM can read the folders and repositories it holds.
+
+## Run it on another machine
+
+1. Copy the archive there. On Windows, \`om-<version>.tar.gz\` extracts with the built-in \`tar\` (\`tar -xzf om-<version>.tar.gz\`); the \`.zip\` extracts with File Explorer or 7-Zip. (The built-in \`tar\` cannot read one test fixture folder in the zip, whose name has a non-ASCII character. It is not needed to run OM.)
+2. Install **Node.js 26 or later** (https://nodejs.org) and **git** (https://git-scm.com).
+3. Extract the archive to a folder you can write to. Keep it there: OM keeps its data in \`.data\` inside the folder.
+4. Open a terminal in that folder and run \`node start.ts\`. Windows: PowerShell or Command Prompt. macOS or Linux: any shell.
+5. Allow the connection if the firewall asks (Windows: allow on private networks).
+6. On the machine itself, open http://127.0.0.1:49991. From another machine on the same network, open
+   http://<address of that machine>:49991. Find the address with \`ipconfig\` (Windows) or \`ip addr\`
+   (Linux) or \`ipconfig getifaddr en0\` (macOS).
+7. Stop OM with Ctrl+C. Start it again the same way.
+
+To update, extract a newer release into a new folder and copy the \`.data\` folder across, so your
+sessions and clones come with you (or point \`OM_DATA_DIR\` at a folder that survives the update).
 
 Settings, as command-line flags or environment variables (a flag wins):
 
@@ -233,6 +249,9 @@ process.stdout.write('Starting the release to check it…\n');
 await smokeTest(out);
 // tar ships with Linux, macOS and Windows 10+. Relative paths only, so every tar agrees.
 execFileSync('tar', ['-czf', `${name}.tar.gz`, name], { cwd: RELEASES, stdio: 'inherit' });
+// A zip too, for Windows users who extract with Explorer. Written by Node (see zip-archive.ts).
+await rm(`${out}.zip`, { force: true });
+await writeZip(out, `${out}.zip`);
 process.stdout.write(
-  `\nRelease ready:\n  ${out}\n  ${out}.tar.gz\n\nRun it from that folder with: node start.ts\n`,
+  `\nRelease ready:\n  ${out}\n  ${out}.tar.gz\n  ${out}.zip\n\nRun it from that folder with: node start.ts\n`,
 );
