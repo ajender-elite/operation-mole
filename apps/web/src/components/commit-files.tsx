@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useState, type JSX } from 'react';
 import { shortSha } from '../lib/attribution.ts';
+import { useDiffHighlight } from '../lib/diff-highlight.ts';
 import {
   COLLAPSE_AFTER,
   fileAnchor,
@@ -97,6 +98,8 @@ export function PatchFileSection({
   const leftLabel =
     patch.baseParent === undefined ? 'nothing' : `parent (${shortSha(patch.baseParent)})`;
   const rightLabel = `commit (${shortSha(patch.commit)})`;
+  // The lines, coloured by the language of the file (plain text when the file has none).
+  const highlight = useDiffHighlight(diff.hunks, diff.rightPath ?? diff.leftPath ?? '');
   const counts = countLines(file);
   const Chevron = isCollapsed ? ChevronRight : ChevronDown;
   return (
@@ -145,6 +148,7 @@ export function PatchFileSection({
               focusedHunk={focusedHunk}
               focusedLine={focusedLine}
               highlightCommit={undefined}
+              tokens={highlight.data ?? undefined}
               layout={layout}
               onLayoutChange={onLayoutChange}
               onFocusHunk={setFocusedHunk}

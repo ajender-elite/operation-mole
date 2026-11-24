@@ -1,5 +1,6 @@
 import type { CommitInfo, GitLogCommit, GitLogFile } from '@om/shared';
 import type { GitService } from '../git/git-service.ts';
+import { CompareInputError } from '../errors.ts';
 import type { ResolvedSnapshot } from '../git/repo-manager.ts';
 import { COMMIT_FORMAT } from '../snapshot/commit-records.ts';
 import { objectView } from '../snapshot/object-view.ts';
@@ -29,6 +30,13 @@ export type LogReadOptions = {
   paths?: readonly string[] | undefined;
   withBody: boolean;
   withStats: boolean;
+  /** Only commits whose message contains this text (fixed, case-insensitive). */
+  grep?: string | undefined;
+  /** Only commits whose author name or email contains this text (fixed, case-insensitive). */
+  author?: string | undefined;
+  topoOrder?: boolean | undefined;
+  /** Follow one file through renames: needs exactly one path. */
+  follow?: boolean | undefined;
 };
 
 /**
@@ -43,6 +51,9 @@ export async function readLog(
   options: LogReadOptions,
   signal?: AbortSignal,
 ): Promise<LogRead> {
+  if (options.follow === true && (options.paths?.length ?? 0) !== 1) {
+    throw new CompareInputError('Following a file needs exactly one path');
+  }
   const view = objectView(include.repoDir, exclude?.repoDir ?? include.repoDir);
   const env = view.env;
   const opt = { env, ...(signal ? { signal } : {}) };
@@ -50,10 +61,21 @@ export async function readLog(
     include.commit,
     ...(exclude === undefined ? [] : [`^${exclude.commit}`]),
     ...(options.firstParent ? ['--first-parent'] : []),
+    ...(options.topoOrder === true ? ['--topo-order'] : []),
     ...(options.since === undefined ? [] : [`--since=${options.since}T00:00:00`]),
+  ];
+  // Matching is literal and case-insensitive, for both the message and the author.
+  const filters = [
+    ...(options.grep === undefined
+      ? []
+      : ['--fixed-strings', '--regexp-ignore-case', `--grep=${options.grep}`]),
+    ...(options.author === undefined
+      ? []
+      : ['--fixed-strings', '--regexp-ignore-case', `--author=${options.author}`]),
   ];
   // After `--` the paths are read literally (see --literal-pathspecs in GitService).
   const pathArgs = ['--', ...(options.paths ?? [])];
+  const follow = options.follow === true ? ['--follow'] : [];
   const format = `%x1e${COMMIT_FORMAT}${options.withBody ? '%x1f%B' : ''}`;
   const args = [
     'log',
@@ -63,11 +85,18 @@ export async function readLog(
     `--max-count=${options.limit + 1}`,
     `--skip=${options.skip}`,
     ...range,
+    ...filters,
+    ...follow,
     ...pathArgs,
   ];
+  // `rev-list --count` cannot follow a rename, so a followed file is counted with `log --follow`.
+  const countArgs =
+    options.follow === true
+      ? ['log', '--format=%H', '--follow', ...range, ...filters, ...pathArgs]
+      : ['rev-list', '--count', ...range, ...filters, ...pathArgs];
   const [{ stdout }, counted, ancestry] = await Promise.all([
     git.run(view.cwd, args, opt),
-    git.run(view.cwd, ['rev-list', '--count', ...range, ...pathArgs], opt),
+    git.run(view.cwd, countArgs, opt),
     exclude === undefined
       ? undefined
       : git.run(view.cwd, ['merge-base', '--is-ancestor', exclude.commit, include.commit], {
@@ -79,7 +108,10 @@ export async function readLog(
   return {
     commits: parsed.slice(0, options.limit),
     hasMore: parsed.length > options.limit,
-    total: Number.parseInt(counted.stdout.trim(), 10) || 0,
+    total:
+      options.follow === true
+        ? counted.stdout.split('\n').filter((line) => line !== '').length
+        : Number.parseInt(counted.stdout.trim(), 10) || 0,
     ...(ancestry === undefined ? {} : { excludeIsAncestor: ancestry.exitCode === 0 }),
   };
 }

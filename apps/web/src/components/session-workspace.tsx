@@ -2,25 +2,40 @@ import type { RepoInfo } from '@om/shared';
 import clsx from 'clsx';
 import {
   ChevronDown,
+  FileCode,
   FileDiff,
   FolderTree,
+  GitBranch,
   GitCommitHorizontal,
+  GitCompare,
   GitPullRequestArrow,
-  History,
   LayoutDashboard,
+  ListChecks,
   ListTree,
+  Search,
   X,
 } from 'lucide-react';
-import { useContext, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { Route, Routes, useLocation, useNavigate } from 'react-router';
 import { shortSha } from '../lib/attribution.ts';
+import { isEditable } from '../lib/keys.ts';
 import { MEDIA, useMediaQuery } from '../lib/media.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
 import { sourceFromParams, sourceLabel } from '../lib/sources.ts';
 import { sessionPath } from '../lib/urls.ts';
 import { WorkspaceContext, type Workspace } from '../lib/workspace-context.ts';
 import { HeaderSlotContext } from './header-slot.tsx';
+import { ShortcutsDialog } from './shortcuts-dialog.tsx';
 import {
   loadTabs,
   saveTabs,
@@ -31,14 +46,18 @@ import {
   type TabRemoval,
   type WorkspaceTab,
 } from '../lib/workspace.ts';
-import { CommitListPage } from '../pages/commits-page.tsx';
+import { BetweenPage } from '../pages/between-page.tsx';
+import { BranchesPage } from '../pages/branches-page.tsx';
+import { CodePage } from '../pages/code-page.tsx';
+import { SearchPage } from '../pages/search-page.tsx';
+import { SeriesPage } from '../pages/series-page.tsx';
+import { CommitsPage, LegacyHistoryRedirect } from '../pages/commits-page.tsx';
 import { CommitPage } from '../pages/commit-page.tsx';
-import { RangeLogPage } from '../pages/range-log-page.tsx';
 import { DirectoryComparePage } from '../pages/directory-compare-page.tsx';
 import { FileComparePage } from '../pages/file-compare-page.tsx';
 import { NotFoundPage } from '../pages/not-found-page.tsx';
 import { SessionOverviewPage } from '../pages/session-overview-page.tsx';
-import { UpstreamPage } from '../pages/upstream-page.tsx';
+import { UpstreamRedirect } from '../pages/upstream-redirect.tsx';
 
 /** The active location is not a workspace (an unknown page inside the session). */
 const OTHER = 'other';
@@ -86,6 +105,25 @@ function SessionTabs({ user, sessionId }: { user: string; sessionId: string }) {
     saveTabs(user, sessionId, tabs);
   }, [tabs, user, sessionId]);
 
+  // ? lists the keyboard shortcuts. Ignored while the user types in a field, where ? is a letter.
+  const [isHelpOpen, setHelpOpen] = useState(false);
+  const closeHelp = useCallback(() => {
+    setHelpOpen(false);
+  }, []);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || isEditable(event.target)) return;
+      if (event.key === '?') {
+        event.preventDefault();
+        setHelpOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
+
   const workspace = useMemo<Workspace>(
     () => ({
       open: (target, options = {}) => {
@@ -130,6 +168,7 @@ function SessionTabs({ user, sessionId }: { user: string; sessionId: string }) {
     ) : null;
   return (
     <WorkspaceContext.Provider value={workspace}>
+      {isHelpOpen && <ShortcutsDialog onClose={closeHelp} />}
       {strip !== null && isShort && headerSlot !== null ? createPortal(strip, headerSlot) : strip}
       <div className="relative min-h-0 flex-1">
         {tabs.map((tab) => {
@@ -141,10 +180,18 @@ function SessionTabs({ user, sessionId }: { user: string; sessionId: string }) {
                 <Route index element={<SessionOverviewPage />} />
                 <Route path="folders" element={<DirectoryComparePage />} />
                 <Route path="file" element={<FileComparePage />} />
-                <Route path="upstream" element={<UpstreamPage />} />
+                {/* Upstream is now Between; old links open Between with the same branches. */}
+                <Route path="upstream" element={<UpstreamRedirect />} />
                 <Route path="commit" element={<CommitPage />} />
-                <Route path="commits" element={<CommitListPage />} />
-                <Route path="log" element={<RangeLogPage />} />
+                {/* One Commits tab: the old Range Log (log) and Commit List (commits?side=) URLs open it too. */}
+                <Route path="commits" element={<CommitsPage />} />
+                <Route path="log" element={<CommitsPage />} />
+                <Route path="code" element={<CodePage />} />
+                <Route path="history" element={<LegacyHistoryRedirect />} />
+                <Route path="search" element={<SearchPage />} />
+                <Route path="branches" element={<BranchesPage />} />
+                <Route path="series" element={<SeriesPage />} />
+                <Route path="between" element={<BetweenPage />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
             </TabPanel>
@@ -191,7 +238,11 @@ const kindIcon: Record<TabKind, typeof FolderTree> = {
   upstream: GitPullRequestArrow,
   commit: GitCommitHorizontal,
   commits: ListTree,
-  log: History,
+  code: FileCode,
+  search: Search,
+  branches: GitBranch,
+  series: ListChecks,
+  between: GitCompare,
 };
 
 /** A tab's name, from its URL and the session's repos (so it follows renames and fetches). */
@@ -216,10 +267,31 @@ function tabTitle(tab: WorkspaceTab, base: string, repos: RepoInfo[]): string {
         : 'Upstream';
     case 'commit':
       return `Commit ${shortSha(params.get('commit') ?? '')}`;
-    case 'commits':
-      return params.get('side') === 'right' ? 'Right commits' : 'Left commits';
-    case 'log':
-      return `Log ${shortSha(params.get('top') ?? '')} → ${shortSha(params.get('bottom') ?? '')}`;
+    case 'commits': {
+      const folder = params.get('path') ?? '';
+      const ref = params.get('ref') ?? '';
+      const range = params.get('notIn');
+      if (folder !== '') return `Commits ${folder.split('/').at(-1) ?? folder}`;
+      return range === null || range === '' ? `Commits ${ref}` : `${ref} not in ${range}`;
+    }
+    case 'code': {
+      const repo = repos.find((r) => r.id === params.get('repo'));
+      const where = repo?.name ?? 'repo';
+      const folder = params.get('path') ?? '';
+      const last = folder.split('/').at(-1) ?? '';
+      return `${last === '' ? where : last} @ ${params.get('ref') ?? ''}`;
+    }
+    case 'search':
+      return (params.get('q') ?? '') === '' ? 'Search' : `Search ${params.get('q') ?? ''}`;
+    case 'branches':
+      return `Branches ${repos.find((r) => r.id === params.get('repo'))?.name ?? ''}`.trim();
+    case 'between': {
+      const leftName = params.get('left') ?? '';
+      const rightName = params.get('right') ?? '';
+      return leftName === '' || rightName === '' ? 'Between' : `${leftName} … ${rightName}`;
+    }
+    case 'series':
+      return 'Series';
     case 'home':
     case undefined:
       return 'Overview';

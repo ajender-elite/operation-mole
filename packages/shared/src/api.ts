@@ -199,7 +199,7 @@ export type DiffHunk = {
 /** How a file's two versions could be compared. */
 export type DiffContentKind = 'text' | 'identical' | 'binary' | 'too-large';
 
-/** Response of `POST /api/snapshot/file-diff`: one file between two git snapshots, with attribution. */
+/** One file's hunks between two git sides, as `POST /api/git/diff` returns it (attribution is added by the browser). */
 export type SnapshotFileDiff = {
   leftCommit: string;
   rightCommit: string;
@@ -215,86 +215,6 @@ export type SnapshotFileDiff = {
   attributionNote?: string;
   /** True when the diff was cut to keep the response small. */
   truncated?: boolean;
-};
-
-/** A commit in an upstream window, with its relationship to the downstream snapshot. */
-export type UpstreamCommit = CommitInfo & {
-  parents: string[];
-  /** Exactly this commit is in downstream's history (`git merge-base --is-ancestor`). */
-  reachableFromDownstream: boolean;
-};
-
-/** Response of `POST /api/upstream/commits`. */
-export type UpstreamCommitList = {
-  upstream: SnapshotInfo;
-  downstream: SnapshotInfo;
-  upstreamLabel: string;
-  downstreamLabel: string;
-  commits: UpstreamCommit[];
-  /** More commits match the window than `limit` allowed. */
-  hasMore: boolean;
-};
-
-/**
- * Outcome of applying one upstream commit to the pristine downstream snapshot:
- * - `clean`: applies without conflicts and changes downstream's content
- * - `represented`: applying it changes nothing (or the commit is already reachable)
- * - `conflict`: git cannot apply it automatically
- * - `unknown`: OM could not decide (see `detail`)
- */
-export type ApplicabilityStatus = 'clean' | 'represented' | 'conflict' | 'unknown';
-
-/**
- * Why OM reached the status:
- * - `reachable`: the exact commit is in downstream's history
- * - `equivalent-patch`: applying changes nothing, and downstream has a commit with the same patch-id
- * - `no-effective-change`: applying changes nothing, with no patch-equivalent commit found
- * - `applies`: applies cleanly and changes content
- * - `conflict`: git reported conflicts
- * - `error`: git failed; see `detail`
- */
-export type ApplicabilityReason =
-  'reachable' | 'equivalent-patch' | 'no-effective-change' | 'applies' | 'conflict' | 'error';
-
-/** What applying the commit does to one file it touches. */
-export type ApplicabilityFile = {
-  path: string;
-  /** Previous path when the commit renames the file. */
-  oldPath?: string;
-  /**
-   * - `applies`: downstream's file changes
-   * - `already-present`: downstream's file already matches the result
-   * - `conflict`: git could not merge this file
-   */
-  outcome: 'applies' | 'already-present' | 'conflict';
-};
-
-/** Conflict markers git left in one file of the merge result, with a little context. */
-export type ConflictExcerpt = {
-  path: string;
-  /** 1-based line of the excerpt's first line in the conflicted result. */
-  startLine: number;
-  lines: string[];
-};
-
-/** Response of `POST /api/upstream/applicability`. */
-export type ApplicabilityResult = {
-  commit: string;
-  /** The pristine downstream commit the upstream commit was applied to. */
-  downstreamCommit: string;
-  status: ApplicabilityStatus;
-  reason: ApplicabilityReason;
-  /** Parent the patch was taken against: the first parent for merges; absent for a root commit. */
-  baseParent?: string;
-  isMerge: boolean;
-  files: ApplicabilityFile[];
-  /** Downstream commits whose patch-id equals this commit's (`git log --cherry-mark`). */
-  equivalentCommits: CommitInfo[];
-  conflicts: ConflictExcerpt[];
-  /** Git's own messages (e.g. `CONFLICT (content): Merge conflict in x`). */
-  messages: string[];
-  /** Explanation for `unknown`, or a caveat about the evidence. */
-  detail?: string;
 };
 
 /** One file of a commit's patch. */
@@ -350,6 +270,23 @@ export type GitResolve = { revisions: GitRevision[] };
 /** Response of `POST /api/git/merge-base`: the common ancestor, or null when the histories share none. */
 export type GitMergeBase = { commit: string | null };
 
+/** One entry of a folder listing: a file, folder, symlink or submodule of one commit. */
+export type GitTreeNode = {
+  name: string;
+  /** The entry's full path in the commit (POSIX). */
+  path: string;
+  kind: 'directory' | 'file' | 'symlink' | 'submodule';
+  oid: string;
+};
+
+/** Response of `POST /api/git/tree`: one folder of a commit, folders first, then files. */
+export type GitTree = {
+  commit: string;
+  /** The folder listed (`''` for the root). */
+  path: string;
+  entries: GitTreeNode[];
+};
+
 /** Response of `POST /api/git/ancestry`: for each commit, whether it is in the history of the tip (null: git could not tell). */
 export type GitAncestry = { results: Array<{ commit: string; isAncestor: boolean | null }> };
 
@@ -395,7 +332,7 @@ export type GitMergeTree = {
 
 /** A commit of a patch-equivalence comparison: the side it is on, or that it has an equal change on the other side. */
 export type GitPatchEquivalent = {
-  commit: CommitInfo & { parents: string[] };
+  commit: CommitInfo & { parents: string[]; body?: string | undefined };
   mark: 'left' | 'right' | 'equivalent';
 };
 
@@ -405,6 +342,8 @@ export type GitPatchEquivalents = {
   right: GitRevision;
   exclude?: GitRevision | undefined;
   commits: GitPatchEquivalent[];
+  /** Some side had more commits than `limit` allows; the newest are kept. */
+  truncated?: boolean | undefined;
 };
 
 /** A file as one side of a tree comparison sees it. */
@@ -453,4 +392,145 @@ export type CommitPatch = {
   files: PatchFile[];
   /** True when files or lines were left out to keep the response small. */
   truncated: boolean;
+};
+
+/** Response of `POST /api/git/files`: every file path of one commit, sorted (a folder is not listed). */
+export type GitFiles = {
+  commit: string;
+  paths: string[];
+  /** The commit has more files than the listing keeps. */
+  truncated: boolean;
+};
+
+/**
+ * One file of a commit, as text, binary, or too large to show. `text` is set only for `text`, and
+ * `oid` is the blob (equal blobs are equal content).
+ */
+export type GitFile = {
+  commit: string;
+  path: string;
+  oid: string;
+  size: number;
+  content: 'text' | 'binary' | 'too-large';
+  text?: string | undefined;
+};
+
+/** One line that matched a search, with its neighbours when context was asked for. */
+export type GitGrepMatch = {
+  path: string;
+  /** 1-based line number. */
+  line: number;
+  /** 1-based column of the first match on the line (bytes, as git counts them). */
+  column: number;
+  text: string;
+  /** Up to `context` lines before the match, oldest first, each with its line number. */
+  before: Array<{ line: number; text: string }>;
+  /** Up to `context` lines after the match, oldest first, each with its line number. */
+  after: Array<{ line: number; text: string }>;
+};
+
+/** Response of `POST /api/git/grep`. */
+export type GitGrep = {
+  commit: string;
+  matches: GitGrepMatch[];
+  /** More matches exist than the response keeps (see the server's limit). */
+  truncated: boolean;
+};
+
+/** Whether a ref is a branch or a tag of a remote. */
+export type GitRefKind = 'branch' | 'tag';
+
+/** One branch or tag of one remote, with the commit it points to. */
+export type GitRefEntry = {
+  remote: string;
+  kind: GitRefKind;
+  /** The name without the remote (e.g. `stable-1.28`). */
+  name: string;
+  commit: string;
+  /** Committer date of the tip commit (ISO-8601). */
+  commitDate: string;
+  subject: string;
+  /** Commits this ref has that `compareTo` does not. Present only with `compareTo`, and not on old git. */
+  ahead?: number | undefined;
+  /** Commits `compareTo` has that this ref does not. */
+  behind?: number | undefined;
+};
+
+/** Response of `POST /api/git/refs`. */
+export type GitRefs = {
+  refs: GitRefEntry[];
+  compareTo?: GitRevision | undefined;
+};
+
+/** Response of `POST /api/git/contains`: every branch or tag whose history includes the commit. */
+export type GitContains = {
+  commit: string;
+  refs: Array<{ remote: string; kind: GitRefKind; name: string }>;
+};
+
+/** Response of `POST /api/git/patch-ids`: each commit's patch id (`git patch-id --stable`), or null. */
+export type GitPatchIds = {
+  results: Array<{ commit: string; patchId: string | null }>;
+};
+
+/** Why a commit in a series can't be checked at all (the request is refused before any step runs). */
+export type CherryPickIssueProblem = 'not-found' | 'not-a-commit' | 'duplicate' | 'merge' | 'root';
+
+/** One commit of a series that the pre-check refused. */
+export type CherryPickIssue = {
+  /** Position in the request (0-based). */
+  index: number;
+  commit: string;
+  problem: CherryPickIssueProblem;
+  message: string;
+};
+
+/** A non-blocking remark about the series (for example, a commit listed before its own parent). */
+export type CherryPickWarning = {
+  index: number;
+  kind: 'parent-after-child';
+  message: string;
+};
+
+/**
+ * What applying one commit did on the result of the commits before it:
+ * - `applies`: the commit applied and changed the result
+ * - `no-change`: applied, but the result is unchanged (its change is already there)
+ * - `in-history`: the commit is already in the target's history, so it was skipped
+ * - `conflict`: git could not merge it; the run stopped here
+ * - `not-run`: after a conflict, so not applied
+ */
+export type CherryPickStepStatus = 'applies' | 'no-change' | 'in-history' | 'conflict' | 'not-run';
+
+/** One step of a series check. */
+export type CherryPickStep = {
+  index: number;
+  commit: CommitInfo & { parents: string[] };
+  status: CherryPickStepStatus;
+  /** Paths the commit changes. */
+  files: string[];
+  /** Conflicted paths, for `conflict`. */
+  conflictedPaths: string[];
+  /** The merged text (with markers) of the first conflicted files; null when binary. */
+  conflictedFiles: Array<{ path: string; text: string | null }>;
+  /** Git's messages about this step. */
+  messages: string[];
+};
+
+/**
+ * Response of `POST /api/git/cherry-pick`:
+ * - `applies`: every commit applied, or was skipped as already present
+ * - `conflict`: the run stopped at `stoppedAt`; later steps are `not-run`
+ * - `invalid`: the request was refused by the pre-check; no step ran (see `issues`)
+ */
+export type GitCherryPick = {
+  onto: GitRevision;
+  outcome: 'applies' | 'conflict' | 'invalid';
+  /** Index of the step that stopped the run (for `conflict`). */
+  stoppedAt?: number | undefined;
+  issues: CherryPickIssue[];
+  warnings: CherryPickWarning[];
+  steps: CherryPickStep[];
+  /** Paths the series changes on `onto`, up to the stop. */
+  changedPaths: string[];
 };

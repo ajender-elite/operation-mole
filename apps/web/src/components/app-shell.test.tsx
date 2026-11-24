@@ -23,7 +23,7 @@ describe('AppShell', () => {
   });
 
   it('shows the user and session inside a session, the session linking to its overview', async () => {
-    renderApp(`/u/${USER}/s/s1/upstream`);
+    renderApp(`/u/${USER}/s/s1/between?repo=r1&left=origin%2Fmain&right=origin%2Fdev`);
     const context = screen.getByRole('navigation', { name: 'Context' });
     expect(within(context).getByRole('link', { name: USER })).toHaveAttribute('href', `/u/${USER}`);
     // The session loads over the mocked API; allow for a busy machine (the suite runs in parallel).
@@ -32,15 +32,17 @@ describe('AppShell', () => {
     ).toHaveAttribute('href', `/u/${USER}/s/s1`);
     // Working contexts are tabs inside the session, not a fixed menu of pages.
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /upstream/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /origin\/main … origin\/dev/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
   });
 
-  it('sends old Lab links to Upstream, keeping the query', async () => {
+  it('sends old Lab links to the Overview, since they name no branches', async () => {
     const app = renderApp(`/u/${USER}/s/s1/lab?limit=50`);
     await waitFor(() => {
-      expect(app.location().pathname).toBe(`/u/${USER}/s/s1/upstream`);
+      expect(app.location().pathname).toBe(`/u/${USER}/s/s1`);
     });
-    expect(app.search().get('limit')).toBe('50');
   });
 
   it('has no session tabs outside a session', () => {

@@ -54,7 +54,14 @@ beforeEach(() => {
     http.post('*/api/users/:user/sessions/:sessionId/repos/:repoId/fetch', ({ params }) => {
       fetchCalls.push(String(params['repoId']));
       repos = repos.map((r) =>
-        r.id === params['repoId'] ? { ...r, branches: [...r.branches, 'hotfix'] } : r,
+        r.id === params['repoId']
+          ? {
+              ...r,
+              branches: [...r.branches, 'hotfix'],
+              // A fetch brings the new branch to the remote it came from, as the server does.
+              remotes: r.remotes.map((x) => ({ ...x, branches: [...x.branches, 'hotfix'] })),
+            }
+          : r,
       );
       return HttpResponse.json(repos.find((r) => r.id === params['repoId']));
     }),

@@ -19,12 +19,12 @@ describe('Overview: Commit log', () => {
     await user.type(within(section).getByLabelText('Bottom (older)'), 'stable-1.26');
     await user.click(within(section).getByRole('button', { name: 'Open commit log' }));
     await waitFor(() => {
-      expect(app.location().pathname).toMatch(/\/log$/);
+      expect(app.location().pathname).toMatch(/\/commits$/);
     });
     const params = new URLSearchParams(app.location().search);
     expect(params.get('repo')).toBe('r1');
-    expect(params.get('top')).toBe('stable-1.28');
-    expect(params.get('bottom')).toBe('stable-1.26');
+    expect(params.get('ref')).toBe('stable-1.28');
+    expect(params.get('notIn')).toBe('stable-1.26');
   });
 
   it('keeps the button off until both revisions are given', async () => {

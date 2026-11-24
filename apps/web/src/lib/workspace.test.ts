@@ -51,14 +51,14 @@ describe('tabIdentity', () => {
     expect(tabIdentity(commit('abc'), BASE)).not.toBe(tabIdentity(commit('abc', 'r2'), BASE));
   });
 
-  it('identifies a commit list by its side and the pinned snapshots and file', () => {
-    const list = (side: string, commits = ['a', 'b'], path = 'a.ts') =>
-      `${BASE}/commits?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev&leftCommit=${commits[0] ?? ''}&rightCommit=${commits[1] ?? ''}&leftPath=${path}&rightPath=${path}&side=${side}`;
-    // Where the user is inside the list (focused hunk) does not make another tab.
-    expect(tabIdentity(`${list('left')}&hunk=1`, BASE)).toBe(tabIdentity(list('left'), BASE));
-    // Left and Right commit lists are separate tabs.
-    expect(tabIdentity(list('left'), BASE)).not.toBe(tabIdentity(list('right'), BASE));
-    expect(tabIdentity(list('left', ['c', 'd']), BASE)).not.toBe(tabIdentity(list('left'), BASE));
+  it('identifies a Commits tab by its ref, its path and its range, not by the commit open in it', () => {
+    const commits = (extra: string) => `${BASE}/commits?repo=r1&ref=main${extra}`;
+    expect(tabKind(commits(''), BASE)).toBe('commits');
+    // The selected commit does not make another tab.
+    expect(tabIdentity(`${commits('')}&commit=abc`, BASE)).toBe(tabIdentity(commits(''), BASE));
+    // A path, and a range, are different tabs.
+    expect(tabIdentity(commits('&path=a.ts'), BASE)).not.toBe(tabIdentity(commits(''), BASE));
+    expect(tabIdentity(commits('&notIn=dev'), BASE)).not.toBe(tabIdentity(commits(''), BASE));
   });
 });
 
@@ -110,16 +110,14 @@ describe('tab storage', () => {
   });
 });
 
-describe('range log tabs', () => {
-  const logUrl = `${BASE}/log?repo=r1&top=aaa&bottom=bbb`;
+describe('range tabs', () => {
+  const range = `${BASE}/commits?repo=r1&ref=aaa&notIn=bbb`;
 
-  it('recognises a range log and keeps one tab per top and bottom', () => {
-    expect(tabKind(logUrl, BASE)).toBe('log');
-    expect(tabIdentity(logUrl, BASE)).toBe(
-      tabIdentity(`${BASE}/log?repo=r1&top=aaa&bottom=bbb&skip=50`, BASE),
-    );
-    expect(tabIdentity(logUrl, BASE)).not.toBe(
-      tabIdentity(`${BASE}/log?repo=r1&top=aaa&bottom=ccc`, BASE),
+  it('keeps the old Range Log as a Commits tab, one per top and bottom', () => {
+    expect(tabKind(`${BASE}/log?repo=r1&top=aaa&bottom=bbb`, BASE)).toBe('commits');
+    expect(tabIdentity(range, BASE)).toBe(tabIdentity(`${range}&q=fix`, BASE));
+    expect(tabIdentity(range, BASE)).not.toBe(
+      tabIdentity(`${BASE}/commits?repo=r1&ref=aaa&notIn=ccc`, BASE),
     );
   });
 });

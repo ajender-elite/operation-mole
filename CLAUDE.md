@@ -7,7 +7,8 @@ Guidance for Claude (and other coding agents) working in this repo. Read this fi
 **OM (Operation Mole)** is a local web app for comparing a **Left** and a **Right**: two git branches cloned into a per-user **session** (every side is a git repository: folder paths are not supported). It shows what is identical, different, or present on only one side, and a hunk-by-hunk file diff with git blame on request.
 
 - Users identify by **username only** (no passwords). Sessions belong to a user. Each session has its own cloned repos.
-- Experiences, each in its own **tab** inside the session (`components/session-workspace.tsx`): **Overview** (add a repo first; then compare, repos), **Folder Compare** (what differs), **File Compare** (one file at pinned commits), **Upstream** (commit applicability), **Commit** (one commit), **Commit List** (diverging commits of one side) and **Range Log** (`top` down to `bottom`). Show only what the current state can use; attribution ("Explain difference") is computed only on request, scoped to what the user is looking at. The UI compares git repositories only: each side is a repo URL (sides may use different remotes) plus an explicitly chosen branch. The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
+
+- Experiences, each in its own **tab** inside the session (`components/session-workspace.tsx`): **Overview** (add a repo first; then compare, explore, repos), **Folder Compare** (what differs), **File Compare** (one file at pinned commits), **Commit** (one commit: its **Patch**, or its **Branches** check), **Commits** (the commits of a ref, of a path or of a range, with the selected commit's patch beside them; one tab per ref and path), **Code** (folders and files of a ref, blame on by default), **Search** (`git grep`), **Branches** (every branch and tag of every remote), **Series** (picks checked in order on the branches you choose: `git cherry-pick` as a dry run) and **Between** (the commits on each side of two branches). Show only what the current state can use; attribution ("Explain difference") is computed only on request, scoped to what the user is looking at. The UI compares git repositories only: each side is a repo URL (sides may use different remotes) plus an explicitly chosen branch. The model and its git semantics are in [docs/investigation-model.md](docs/investigation-model.md); keep them precise.
 
 ## Commands
 
@@ -37,13 +38,13 @@ apps/server       Fastify. Node runs .ts directly (type stripping). No build ste
   src/app.ts            all routes + error mapping (CompareInputError→400, NotFound→404, Conflict→409)
   src/compare/          folder rules on git trees (git-trees.ts), summary counts (summary.ts), sort order (sort.ts)
   src/git/              git-service.ts (clone/branches/fetch, run() for analysis, read/write lock per repo), repo-manager.ts (per-session dirs, remotes, snapshots)
-  src/git-api/          the git primitives (log, show, blame, diff, merge-tree, compare-trees, patch-equivalents), commit-patch.ts, merge-tree-parse.ts
+  src/git-api/          the git primitives (log, show, blame, diff, merge-tree, compare-trees, patch-equivalents, tree, files, file, grep, refs, contains, patch-ids, cherry-pick), commit-patch.ts, merge-tree-parse.ts
   src/snapshot/         snapshot-analyzer.ts (file diffs as hunks, renames, ancestry), parsers, object views
   src/cache/            analysis cache: memory tier, storage in each user’s SQLite, single-flight
   src/store/store.ts    node:sqlite: sessions, repos, remotes, analysis cache (one file per user)
   test/                 Vitest. Real temp folders and real git repos (git-fixtures.ts; scenario.ts: deterministic histories on the pinned Hello-World seed, and nginxRepo() with nginx stable-1.26/1.28; both bundles in test/seed/).
 apps/web          React 19 + Vite + Tailwind v4 + TanStack Query + React Router
-  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/file|/upstream|/commit|/commits|/log] inside SessionWorkspace tabs (/lab → upstream, /files → folders)
+  src/routes.tsx        / → Welcome, /u/:user → Sessions, /u/:user/s/:sessionId[/folders|/file|/commit|/commits|/code|/search|/branches|/series|/between] inside SessionWorkspace tabs (/log and /history → commits, /upstream and /lab → between, /files → folders)
   src/components/, src/pages/   kebab-case files (app-shell.tsx), PascalCase components (AppShell)
   src/lib/              api client (parses every response with the shared schemas), sources (URL⇄Source), session hooks, tree, theme, format
   src/test/             MSW server + handlers, renderApp(url) helper
@@ -90,7 +91,7 @@ docs/             architecture, API, data model, git, comparison rules, frontend
   - Analysis (diff, blame, log, merge-tree) goes through `GitService.run`, not simple-git; it must never write refs, the index or a worktree. `merge-tree` writes only to a scratch `GIT_OBJECT_DIRECTORY` that is always removed.
   - A git side resolves to an exact commit (branch, tag or SHA); analyses run on SHAs.
   - Attribution is `git blame` on each changed line's own side. Never present it as the historical cause; label shared-history commits.
-  - Applicability evaluates each upstream commit independently against the same downstream commit. Never describe a conflict as "missing" or a clean apply as "safe".
+  - A series is checked as a dry run: each commit is applied on the result of the one before (`POST /api/git/cherry-pick`), and the first conflict stops it. Never describe a conflict as "missing" or a clean apply as "safe".
 - **Git security (don't weaken):**
   - URLs: https, ssh and scp-style only (`file://` only in tests via `allowedProtocols`).
   - Environment: `GIT_ALLOW_PROTOCOL`, `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode`, and an allowlist of inherited variables (simple-git rejects others such as `GIT_EDITOR`).

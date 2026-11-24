@@ -138,6 +138,24 @@ describe('POST /api/git/log', () => {
     expect((await logOf({ include: 'M' })).excludeIsAncestor).toBeUndefined();
   });
 
+  it('takes a real calendar date for `since`, as the browser sends it', async () => {
+    const past = await logOf({ include: 'M', exclude: 'C1', options: { since: '2000-01-01' } });
+    expect(past.commits.map((x) => x.sha)).toContain(c['M']);
+    // Fixture commits are dated now; 2030 is after them (git ignores far-future dates past ~2038).
+    const future = await logOf({ include: 'M', exclude: 'C1', options: { since: '2030-01-01' } });
+    expect(future.commits).toEqual([]);
+  });
+
+  it('refuses a malformed `since`', async () => {
+    const res = await om.inject('/api/git/log', {
+      user: 'gitapi',
+      sessionId: om.sessionId,
+      source: { type: 'git', repoId: repo.id, branch: 'main' },
+      since: '2024/01/01',
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('refuses a limit above 200', async () => {
     const res = await om.inject('/api/git/log', {
       user: 'gitapi',

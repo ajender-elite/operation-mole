@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp, Columns2, Rows3 } from 'lucide-react';
 import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react';
 import { commitPlacement, shortSha } from '../lib/attribution.ts';
 import { formatDate } from '../lib/dates.ts';
+import type { HighlightedToken } from '../lib/highlight.ts';
 import type { BlameMark } from '../lib/blame.ts';
 import { MEDIA, useMediaQuery } from '../lib/media.ts';
 import { FullText } from './full-text.tsx';
@@ -26,6 +27,8 @@ type SnapshotDiffViewProps = {
   focusedLine: LineRef | undefined;
   /** Commit whose lines are emphasized (others dimmed). */
   highlightCommit: string | undefined;
+  /** Syntax colours: tokens[hunk][line] (see lib/diff-highlight.ts). Plain text where absent. */
+  tokens?: HighlightedToken[][][] | undefined;
   /** Undefined means the default, side by side. */
   layout?: DiffLayout | undefined;
   onLayoutChange?: ((layout: DiffLayout) => void) | undefined;
@@ -44,6 +47,11 @@ type SnapshotDiffViewProps = {
    */
   blame?:
     { left?: ReadonlyMap<number, BlameMark>; right?: ReadonlyMap<number, BlameMark> } | undefined;
+  /**
+   * Lines (by their number on each side, which is the same for identical content) whose last change is a
+   * different commit on each side. Marked, counted, and reached with Previous and Next difference.
+   */
+  differingLines?: ReadonlySet<number> | undefined;
 };
 
 const lineClass: Record<'left' | 'right', Partial<Record<DiffLine['kind'], string>>> = {
@@ -90,6 +98,7 @@ export function SnapshotDiffView({
   focusedHunk,
   focusedLine,
   highlightCommit,
+  tokens,
   layout,
   onLayoutChange,
   onFocusHunk,
@@ -98,6 +107,7 @@ export function SnapshotDiffView({
   wrap = true,
   onWrapChange,
   blame,
+  differingLines,
 }: SnapshotDiffViewProps): JSX.Element {
   // On a touch screen there are no j/k keys: Next and Previous change buttons take their place.
   const isTouch = useMediaQuery(MEDIA.coarse);
@@ -114,6 +124,8 @@ export function SnapshotDiffView({
         ? 1
         : 0;
   const hunkRefs = useRef<Array<HTMLElement | null>>([]);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [differenceAt, setDifferenceAt] = useState(-1);
   const lineRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -153,13 +165,34 @@ export function SnapshotDiffView({
       onFocusLine(next);
     }
   };
+  // The marked lines on the left, in order: Previous and Next difference step through them.
+  const jumpToDifference = (delta: 1 | -1) => {
+    const marks =
+      rootRef.current?.querySelectorAll<HTMLElement>('[data-differs][data-side="left"]') ?? [];
+    if (marks.length === 0) return;
+    const next =
+      differenceAt < 0
+        ? delta > 0
+          ? 0
+          : marks.length - 1
+        : (differenceAt + delta + marks.length) % marks.length;
+    setDifferenceAt(next);
+    marks[next]?.scrollIntoView({ block: 'center' });
+  };
+  const differingCount = differingLines?.size ?? 0;
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // On identical content the lines that differ by commit are what n and p step through; there are no hunks.
+    const step = (delta: 1 | -1) => {
+      if (differingCount > 0) jumpToDifference(delta);
+      else go(delta);
+    };
     const actions: Record<string, () => void> = {
       n: () => {
-        go(1);
+        step(1);
       },
       p: () => {
-        go(-1);
+        step(-1);
       },
       j: () => {
         moveLine(1);
@@ -222,7 +255,36 @@ export function SnapshotDiffView({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
+      {differingCount > 0 && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-surface px-4 py-1.5 text-xs text-muted"
+        >
+          <span>
+            {differingCount} {differingCount === 1 ? 'line is' : 'lines are'} last changed by a
+            different commit on each side
+          </span>
+          <button
+            type="button"
+            className="rounded border border-line px-1.5 py-0.5 hover:bg-hover"
+            onClick={() => {
+              jumpToDifference(-1);
+            }}
+          >
+            Previous difference
+          </button>
+          <button
+            type="button"
+            className="rounded border border-line px-1.5 py-0.5 hover:bg-hover"
+            onClick={() => {
+              jumpToDifference(1);
+            }}
+          >
+            Next difference
+          </button>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line bg-surface px-4 py-1.5 text-xs text-muted">
         <div role="group" aria-label="Diff layout" className="flex items-center gap-1">
           <button
@@ -417,12 +479,16 @@ export function SnapshotDiffView({
                         line.commit !== highlightCommit;
                       const isMatch =
                         highlightCommit !== undefined && line.commit === highlightCommit;
+                      const lineNumber = side === 'left' ? line.leftLine : line.rightLine;
+                      const isDiffering =
+                        lineNumber !== undefined && differingLines?.has(lineNumber) === true;
                       return (
                         <div
                           key={side}
                           ref={isFocused ? lineRef : undefined}
                           role="cell"
                           data-side={side}
+                          data-differs={isDiffering || undefined}
                           data-kind={line.kind}
                           data-commit={line.commit}
                           aria-current={isFocused || undefined}
@@ -431,6 +497,7 @@ export function SnapshotDiffView({
                             gridColumns(side),
                             side === 'left' ? 'border-r border-line' : undefined,
                             lineClass[side][line.kind],
+                            isDiffering && 'bg-modified-soft',
                             isChanged && 'cursor-pointer',
                             isDimmed && 'opacity-40',
                             isMatch && 'ring-1 ring-inset ring-accent',
@@ -447,7 +514,9 @@ export function SnapshotDiffView({
                           {isBlamed(side)
                             ? blameCell(side, side === 'left' ? line.leftLine : line.rightLine)
                             : markerFor(line, side)}
-                          <span className={codeClass(wrap)}>{line.text || ' '}</span>
+                          <span className={codeClass(wrap)}>
+                            {codeText(line.text, tokens?.[h]?.[index])}
+                          </span>
                         </div>
                       );
                     })}
@@ -503,7 +572,9 @@ export function SnapshotDiffView({
                       ) : (
                         markerFor(line, line.kind === 'added' ? 'right' : 'left')
                       )}
-                      <span className={codeClass(wrap)}>{line.text || ' '}</span>
+                      <span className={codeClass(wrap)}>
+                        {codeText(line.text, tokens?.[h]?.[i])}
+                      </span>
                     </div>
                   );
                 })}
@@ -642,4 +713,17 @@ function CommitMarker({
       )}
     </span>
   );
+}
+
+/**
+ * A line's code: its syntax tokens when they are known (each coloured with its palette colour), else the text.
+ * An empty line shows a space, so its row keeps its height.
+ */
+function codeText(text: string, tokens: HighlightedToken[] | undefined): ReactNode {
+  if (tokens === undefined || tokens.length === 0) return text || ' ';
+  return tokens.map((token, k) => (
+    <span key={k} style={token.color === undefined ? undefined : { color: token.color }}>
+      {token.content}
+    </span>
+  ));
 }

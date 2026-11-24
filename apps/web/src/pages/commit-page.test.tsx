@@ -150,10 +150,57 @@ describe('Commit tab', () => {
     await user.type(screen.getByRole('textbox', { name: 'Range end' }), BOTTOM);
     await user.click(screen.getByRole('button', { name: 'Open range' }));
     await waitFor(() => {
-      expect(app.location().pathname).toMatch(/\/log$/);
+      expect(app.location().pathname).toMatch(/\/commits$/);
     });
     const params = new URLSearchParams(app.location().search);
-    expect(params.get('top')).toBe(SHA);
-    expect(params.get('bottom')).toBe(BOTTOM);
+    expect(params.get('ref')).toBe(SHA);
+    expect(params.get('notIn')).toBe(BOTTOM);
+  });
+});
+
+describe('Commit tab: from this commit', () => {
+  it('browses the files at this commit, in a tab of its own', async () => {
+    const { router } = renderApp(url);
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Browse files at this commit' }),
+    );
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/u/karthik/s/s1/code');
+    });
+    expect(new URLSearchParams(router.state.location.search).get('ref')).toBe(SHA);
+  });
+
+  it('lists the commits from this commit, in a tab of its own', async () => {
+    const { router } = renderApp(url);
+    await userEvent.click(await screen.findByRole('button', { name: 'Commits from here' }));
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/u/karthik/s/s1/commits');
+    });
+    expect(new URLSearchParams(router.state.location.search).get('ref')).toBe(SHA);
+  });
+});
+
+describe('Commit tab: contained in', () => {
+  it('lists the branches and tags of every remote that have the commit, and opens one in its Code tab', async () => {
+    server.use(
+      http.post('*/api/git/contains', () =>
+        HttpResponse.json({
+          commit: SHA,
+          refs: [
+            { remote: 'origin', kind: 'branch', name: 'main' },
+            { remote: 'upstream', kind: 'branch', name: 'dev' },
+            { remote: 'origin', kind: 'tag', name: 'v1.0' },
+          ],
+        }),
+      ),
+    );
+    const { router } = renderApp(url);
+    await userEvent.click(await screen.findByRole('button', { name: 'upstream/dev' }));
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/u/karthik/s/s1/code');
+    });
+    const params = new URLSearchParams(router.state.location.search);
+    expect(params.get('ref')).toBe('dev');
+    expect(params.get('remote')).toBe('upstream');
   });
 });

@@ -96,7 +96,7 @@ export const GitLogRequestSchema = SessionFieldsSchema.extend({
   firstParent: z.boolean().default(false),
   since: z
     .string()
-    .regex(/^d{4}-d{2}-d{2}$/, 'Use YYYY-MM-DD')
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
     .optional(),
   limit: z.number().int().min(1).max(200).default(50),
   skip: z.number().int().min(0).default(0),
@@ -104,6 +104,14 @@ export const GitLogRequestSchema = SessionFieldsSchema.extend({
   withBody: z.boolean().default(false),
   /** Include each commit's changed files with line counts, renames and binary marks. */
   withStats: z.boolean().default(false),
+  /** Only commits whose message contains this text (fixed text, case-insensitive). */
+  grep: z.string().min(1).max(200).optional(),
+  /** Only commits whose author name or email contains this text (fixed text, case-insensitive). */
+  author: z.string().min(1).max(200).optional(),
+  /** Parents before children (`--topo-order`), instead of newest-committed first. */
+  topoOrder: z.boolean().default(false),
+  /** Follow one file through its renames (`--follow`); needs exactly one path. */
+  follow: z.boolean().default(false),
 });
 /** What clients send. See {@link GitLogRequestSchema}. */
 export type GitLogRequest = z.input<typeof GitLogRequestSchema>;
@@ -118,6 +126,13 @@ export const GitResolveRequestSchema = SessionFieldsSchema.extend({
   sources: z.array(GitSourceSchema).min(1).max(20),
 });
 export type GitResolveRequest = z.input<typeof GitResolveRequestSchema>;
+
+/** Body of `POST /api/git/tree`: one folder of a commit's tree (the root when `path` is absent). */
+export const GitTreeRequestSchema = SessionFieldsSchema.extend({
+  source: GitSourceSchema,
+  path: RepoPathSchema.optional(),
+});
+export type GitTreeRequest = z.input<typeof GitTreeRequestSchema>;
 
 /** Body of `POST /api/git/merge-base`: the best common ancestor of two revisions. */
 export const GitMergeBaseRequestSchema = SessionFieldsSchema.extend({
@@ -177,6 +192,10 @@ export const GitPatchEquivalentsRequestSchema = SessionFieldsSchema.extend({
   left: GitSourceSchema,
   right: GitSourceSchema,
   exclude: GitSourceSchema.optional(),
+  /** Include each commit's message (`body`), for matching trailers such as `(cherry picked from …)`. */
+  withBody: z.boolean().default(false),
+  /** At most this many commits per side, newest first. */
+  limit: z.number().int().min(1).max(1000).default(500),
 });
 export type GitPatchEquivalentsRequest = z.input<typeof GitPatchEquivalentsRequestSchema>;
 
@@ -187,3 +206,59 @@ export const GitCompareTreesRequestSchema = SessionFieldsSchema.extend({
   paths: z.array(RepoPathSchema).max(1000).optional(),
 });
 export type GitCompareTreesRequest = z.input<typeof GitCompareTreesRequestSchema>;
+
+/** Body of `POST /api/git/files`: every file path of one commit (for go-to-file). */
+export const GitFilesRequestSchema = SessionFieldsSchema.extend({ source: GitSourceSchema });
+export type GitFilesRequest = z.input<typeof GitFilesRequestSchema>;
+
+/** Body of `POST /api/git/file`: one file's text at one commit, or that it is binary or too large. */
+export const GitFileRequestSchema = SessionFieldsSchema.extend({
+  source: GitSourceSchema,
+  path: RepoPathSchema,
+});
+export type GitFileRequest = z.input<typeof GitFileRequestSchema>;
+
+/**
+ * Body of `POST /api/git/grep`: lines of one commit that match `query` (fixed text, or an extended
+ * regular expression), with up to `context` lines around each.
+ */
+export const GitGrepRequestSchema = SessionFieldsSchema.extend({
+  source: GitSourceSchema,
+  query: z.string().min(1).max(200),
+  regex: z.boolean().default(false),
+  ignoreCase: z.boolean().default(false),
+  paths: z.array(RepoPathSchema).max(100).optional(),
+  context: z.number().int().min(0).max(3).default(0),
+});
+export type GitGrepRequest = z.input<typeof GitGrepRequestSchema>;
+
+/**
+ * Body of `POST /api/git/refs`: every branch and tag of every remote of a repo. With `compareTo`, each
+ * branch also carries how far it is ahead of and behind that commit.
+ */
+export const GitRefsRequestSchema = SessionFieldsSchema.extend({
+  repoId: z.string().min(1, 'Choose a repository'),
+  compareTo: GitSourceSchema.optional(),
+});
+export type GitRefsRequest = z.input<typeof GitRefsRequestSchema>;
+
+/** Body of `POST /api/git/contains`: every branch and tag (of any remote) whose history holds the commit. */
+export const GitContainsRequestSchema = SessionFieldsSchema.extend({ source: GitSourceSchema });
+export type GitContainsRequest = z.input<typeof GitContainsRequestSchema>;
+
+/** Body of `POST /api/git/patch-ids`: the patch id of each commit (null for merges and empty commits). */
+export const GitPatchIdsRequestSchema = SessionFieldsSchema.extend({
+  source: GitSourceSchema,
+  commits: z.array(CommitIdSchema).min(1).max(200),
+});
+export type GitPatchIdsRequest = z.input<typeof GitPatchIdsRequestSchema>;
+
+/**
+ * Body of `POST /api/git/cherry-pick`: would `git cherry-pick <commits…>` onto `onto` succeed, applied in
+ * the order given, each on the result of the one before? Nothing is written to any ref or worktree.
+ */
+export const GitCherryPickRequestSchema = SessionFieldsSchema.extend({
+  onto: GitSourceSchema,
+  commits: z.array(CommitIdSchema).min(1, 'Choose at least one commit').max(100),
+});
+export type GitCherryPickRequest = z.input<typeof GitCherryPickRequestSchema>;

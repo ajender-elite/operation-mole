@@ -68,7 +68,7 @@ describe('File Compare', () => {
     expect(screen.getByRole('button', { name: 'Inline' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('opens the diverging commits of Left in a new Commit List tab, leaving this one', async () => {
+  it('opens the diverging commits of Left in a new Commits tab, leaving this one', async () => {
     const { location } = renderApp(url());
     await userEvent
       .setup()
@@ -77,8 +77,7 @@ describe('File Compare', () => {
       expect(location().pathname).toMatch(/\/commits$/);
     });
     const params = new URLSearchParams(location().search);
-    expect(params.get('side')).toBe('left');
-    expect(params.get('leftCommit')).toBe(L);
-    expect(params.get('leftPath')).toBe('a.txt');
+    expect(params.get('ref')).toBe(L);
+    expect(params.get('notIn')).toBe(R);
   });
 });

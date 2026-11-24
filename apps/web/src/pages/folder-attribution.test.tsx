@@ -272,6 +272,15 @@ const subjects = async () =>
     .map((b) => /[A-E]: [a-z -]+/.exec(b.textContent)?.[0]);
 const attributed = () => [...new Set(blamedPaths)];
 
+/** The line (its row) whose code reads `text`. Syntax colours split a line into elements, so text matching cannot see it. */
+function lineWith(scope: HTMLElement, text: string): HTMLElement {
+  const found = [...scope.querySelectorAll<HTMLElement>('[role="cell"]')].find((cell) =>
+    cell.textContent.includes(text),
+  );
+  if (found === undefined) throw new Error(`no line reads ${text}`);
+  return found;
+}
+
 describe('explaining differences on demand', () => {
   it('shows what is different first, without attributing anything', async () => {
     renderApp(FOLDERS);
@@ -348,7 +357,7 @@ describe('explaining differences on demand', () => {
       expect(app.location().pathname).toBe(`${BASE}/file`);
     });
     const diff = await screen.findByRole('region', { name: 'Snapshot diff' });
-    expect(within(diff).getByText('value = 20')).toBeInTheDocument();
+    expect(lineWith(diff, 'value = 20')).toBeInTheDocument();
     expect(diff.querySelectorAll('[data-commit]')).toHaveLength(0);
     expect(screen.queryByRole('complementary', { name: 'Attribution' })).not.toBeInTheDocument();
     expect(attributed()).toEqual([]);
@@ -369,7 +378,7 @@ describe('explaining differences on demand', () => {
     expect(within(panel()).getByText('Hunk')).toBeInTheDocument();
     expect(await subjects()).toEqual(['B: add extra']);
 
-    await user.click(within(diff).getByText('value = 20'));
+    await user.click(lineWith(diff, 'value = 20'));
     expect(within(panel()).getByText('Line')).toBeInTheDocument();
     expect(await subjects()).toEqual(['C: change value']);
   });

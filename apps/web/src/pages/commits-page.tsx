@@ -1,471 +1,459 @@
-import type { CommitInfo, GitLogCommit, GitSource } from '@om/shared';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import clsx from 'clsx';
-import { GitCommitHorizontal, LoaderCircle } from 'lucide-react';
-import { useState, type JSX } from 'react';
-import { useSearchParams } from 'react-router';
+import type { GitLogCommit, GitSource } from '@om/shared';
+import { useQuery } from '@tanstack/react-query';
+import type { JSX, SubmitEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Navigate, useSearchParams } from 'react-router';
+import { CommitRow } from '../components/commit-row.tsx';
+import { ExploreHeader } from '../components/explore-header.tsx';
+import { RefPicker } from '../components/ref-picker.tsx';
+import { Loading, Notice } from '../components/notice.tsx';
 import { gitLog } from '../lib/api.ts';
-import { shortSha, summarizeAttribution, type CommitShare } from '../lib/attribution.ts';
-import { formatDate } from '../lib/dates.ts';
-import { logUrl, commitUrl, type FileCompareTarget } from '../lib/urls.ts';
-import { fileDiffQuery, type SnapshotPair } from '../lib/snapshot-diff.ts';
-import { sourceFromParams, type Side } from '../lib/sources.ts';
+import { exploreLinks } from '../lib/explore-links.ts';
+import { useRepoRefs } from '../lib/repo-refs.ts';
+import { toSource } from '../lib/source-draft.ts';
+import { isEditable } from '../lib/keys.ts';
+import { loadPicks, savePicks, withPick } from '../lib/pick-tray.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
+import { refSourceFromParams } from '../lib/sources.ts';
+import { commitsUrl, seriesUrl, sessionPath } from '../lib/urls.ts';
 import { useWorkspace } from '../lib/workspace-context.ts';
+import { CommitDetails } from './commit-page.tsx';
 
-/** Commits per page: more load on request. */
+/** Commits per page; "Show more" asks for the next page. */
 const PAGE = 50;
 
-const value = (params: URLSearchParams, name: string): string | undefined => {
-  const v = params.get(name);
-  return v === null || v === '' ? undefined : v;
-};
-
-/** The pinned File Compare this list belongs to, and which side (Left or Right) it lists. */
-type CommitListContext = FileCompareTarget & { side: Side; hunk: number | undefined };
-
-function commitListContext(params: URLSearchParams): CommitListContext | undefined {
-  const left = sourceFromParams(params, 'left');
-  const right = sourceFromParams(params, 'right');
-  const leftCommit = value(params, 'leftCommit');
-  const rightCommit = value(params, 'rightCommit');
-  const leftPath = value(params, 'leftPath');
-  const rightPath = value(params, 'rightPath');
-  const side = params.get('side');
-  const key = leftPath ?? rightPath;
-  if (!left || !right || leftCommit === undefined || rightCommit === undefined) return undefined;
-  if (key === undefined || (side !== 'left' && side !== 'right')) return undefined;
-  const hunkParam = params.get('hunk');
-  return {
-    left,
-    right,
-    leftCommit,
-    rightCommit,
-    side,
-    hunk: hunkParam !== null && /^\d+$/.test(hunkParam) ? Number(hunkParam) : undefined,
-    target: {
-      key,
-      ...(leftPath === undefined ? {} : { leftPath }),
-      ...(rightPath === undefined ? {} : { rightPath }),
-    },
-  };
-}
-
-/** What a row needs to show: a commit from the log, or one that accounts for the changes. */
-type RowCommit = Pick<
-  CommitInfo,
-  'sha' | 'subject' | 'authorName' | 'authorDate' | 'commitDate'
-> & {
-  parents?: string[] | undefined;
-  body?: string | undefined;
-};
-
-type Filter = 'all' | 'touching' | 'accounting';
-
 /**
- * Commit List: one side of a File Compare, in its own tab. One list of the commits this side has
- * and the other does not, with three filters: all of them, those that touched this file, and those
- * that account for the changes on screen. Grouped by day; search; select two to open the range
- * between them in a Range Log.
+ * The URL a legacy Commits link redirects to, or undefined when the link is not a legacy one. Range Log
+ * (`top`, `bottom`) is the commits of `top` not in `bottom`; the old Commit List (`side=left|right`) is the
+ * commits of that side's commit not in the other side's, for its repo.
  */
-export function CommitListPage(): JSX.Element {
-  const [params] = useSearchParams();
-  const context = commitListContext(params);
-  if (!context) {
-    return (
-      <p role="alert" className="m-auto p-8 text-center text-muted">
-        This commit list link is incomplete. Open it from a File Compare.
-      </p>
+function legacyCommitsUrl(
+  params: URLSearchParams,
+  user: string,
+  sessionId: string,
+): string | undefined {
+  const repo = params.get('repo') ?? '';
+  const top = params.get('top') ?? '';
+  const bottom = params.get('bottom') ?? '';
+  if (repo !== '' && top !== '' && bottom !== '') {
+    return commitsUrl(
+      user,
+      sessionId,
+      { type: 'git', repoId: repo, branch: top },
+      { notIn: { type: 'git', repoId: repo, branch: bottom } },
     );
   }
-  return <CommitList key={JSON.stringify(context)} context={context} />;
+  const side = params.get('side');
+  if (side === 'left' || side === 'right') {
+    const other = side === 'left' ? 'right' : 'left';
+    const repoId = params.get(`${side}Repo`) ?? repo;
+    const commit = params.get(`${side}Commit`) ?? '';
+    const otherCommit = params.get(`${other}Commit`) ?? '';
+    if (repoId !== '' && commit !== '') {
+      return commitsUrl(
+        user,
+        sessionId,
+        { type: 'git', repoId, branch: commit },
+        otherCommit === '' ? {} : { notIn: { type: 'git', repoId, branch: otherCommit } },
+      );
+    }
+  }
+  return undefined;
 }
 
-function CommitList({ context }: { context: CommitListContext }) {
-  const workspace = useWorkspace();
+/**
+ * The Commits tab: the commits reachable from a ref, newest first, with a pane for the selected one. Narrow
+ * the list by message, author, path (following its renames) or a range (`notIn`). `j`/`k` walk the list.
+ * It replaces the History tab, Range Log and the File Compare Commit List.
+ */
+export function CommitsPage(): JSX.Element {
+  const [params] = useSearchParams();
+  const { user, sessionId } = useSessionParams();
+  const legacy = legacyCommitsUrl(params, user, sessionId);
+  if (legacy !== undefined) return <Navigate to={legacy} replace />;
+  const source = refSourceFromParams(params);
+  if (source === undefined) {
+    return (
+      <Notice>
+        This commits link is incomplete. Open it from a branch, the Code tab or a commit.
+      </Notice>
+    );
+  }
+  return (
+    <CommitsList key={`${source.repoId}/${source.remote ?? ''}/${source.branch}`} source={source} />
+  );
+}
+
+/** The History tab of a path, as it was: the same list, with the path set. */
+export function LegacyHistoryRedirect(): JSX.Element {
+  const [params] = useSearchParams();
+  const { user, sessionId } = useSessionParams();
+  const source = refSourceFromParams(params);
+  if (source === undefined) return <Navigate to={sessionPath(user, sessionId)} replace />;
+  return (
+    <Navigate
+      to={commitsUrl(user, sessionId, source, { path: params.get('path') ?? undefined })}
+      replace
+    />
+  );
+}
+
+function CommitsList({ source }: { source: GitSource }): JSX.Element {
   const { user, sessionId } = useSessionParams();
   const session = useSessionDetail(user, sessionId);
-  const repos = session.data?.repos ?? [];
-  const { left, right, leftCommit, rightCommit, target, side, hunk } = context;
+  const [params, setParams] = useSearchParams();
+  const workspace = useWorkspace();
+  const [pages, setPages] = useState(1);
+  const [picks, setPicks] = useState(() => loadPicks(user, sessionId, source.repoId));
+  const repo = session.data?.repos.find((r) => r.id === source.repoId);
+  const refs = useRepoRefs(user, sessionId, source.repoId, repo !== undefined);
 
-  // This side, and the other side it is compared with (its divergence is "not in the other").
-  const mine: GitSource = {
-    ...(side === 'left' ? left : right),
-    branch: side === 'left' ? leftCommit : rightCommit,
-  };
-  const other: GitSource = {
-    ...(side === 'left' ? right : left),
-    branch: side === 'left' ? rightCommit : leftCommit,
-  };
-  const sidePath = side === 'left' ? target.leftPath : target.rightPath;
-  const sideLabel = side === 'left' ? 'Left' : 'Right';
+  const path = params.get('path') ?? '';
+  const grep = params.get('q') ?? '';
+  const author = params.get('author') ?? '';
+  const isFollowing = params.get('follow') === '1' && path !== '';
+  const isFirstParent = params.get('firstParent') === '1';
+  const isTopoOrder = params.get('topo') === '1';
+  const notInBranch = params.get('notIn') ?? '';
+  const notInRemote = params.get('notInRemote') ?? '';
+  const notIn: GitSource | undefined =
+    notInBranch === ''
+      ? undefined
+      : {
+          type: 'git',
+          repoId: source.repoId,
+          branch: notInBranch,
+          ...(notInRemote === '' ? {} : { remote: notInRemote }),
+        };
+  const selected = params.get('commit') ?? '';
 
-  const [filter, setFilter] = useState<Filter>('all');
-  const [query, setQuery] = useState('');
-  const [isSelecting, setSelecting] = useState(false);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-
-  const paths = filter === 'touching' && sidePath !== undefined ? [sidePath] : undefined;
-  const log = useInfiniteQuery({
-    queryKey: ['commit-list', user, sessionId, mine, other, paths ?? null] as const,
-    initialPageParam: 0,
-    queryFn: ({ pageParam, signal }) =>
+  const log = useQuery({
+    queryKey: [
+      'git-commits',
+      user,
+      sessionId,
+      source.repoId,
+      source.remote ?? '',
+      source.branch,
+      notIn?.branch ?? '',
+      notIn?.remote ?? '',
+      path,
+      isFollowing,
+      grep,
+      author,
+      isFirstParent,
+      isTopoOrder,
+      pages,
+    ] as const,
+    queryFn: ({ signal }) =>
       gitLog(
         {
           user,
           sessionId,
-          source: mine,
-          exclude: other,
-          withBody: true,
-          limit: PAGE,
-          skip: pageParam,
-          ...(paths === undefined ? {} : { paths }),
+          source,
+          limit: PAGE * pages,
+          ...(notIn === undefined ? {} : { exclude: notIn }),
+          ...(path === '' ? {} : { paths: [path] }),
+          follow: isFollowing,
+          firstParent: isFirstParent,
+          topoOrder: isTopoOrder,
+          ...(grep === '' ? {} : { grep }),
+          ...(author === '' ? {} : { author }),
         },
         signal,
       ),
-    getNextPageParam: (last, all) =>
-      last.hasMore ? all.reduce((count, page) => count + page.commits.length, 0) : undefined,
-    staleTime: Infinity,
-    enabled: filter !== 'accounting',
+    enabled: repo !== undefined,
   });
 
-  // The commits that account for the lines the File Compare shows (or the focused hunk of them).
-  const pair: SnapshotPair = {
-    user,
-    sessionId,
-    left: { ...left, branch: leftCommit },
-    right: { ...right, branch: rightCommit },
+  const commits: GitLogCommit[] = useMemo(() => log.data?.commits ?? [], [log.data]);
+  const current = selected !== '' ? selected : (commits[0]?.sha ?? '');
+  const select = (sha: string) => {
+    const next = new URLSearchParams(params);
+    next.set('commit', sha);
+    setParams(next);
   };
-  const visible = useQuery({
-    ...fileDiffQuery(pair, target, false, true),
-    enabled: filter === 'accounting',
-  });
-  const accounting: CommitShare[] = (() => {
-    const diff = visible.data;
-    if (!diff) return [];
-    const hunkObject = hunk === undefined ? undefined : diff.hunks[hunk];
-    const entries =
-      hunkObject === undefined
-        ? [{ key: target.key, diff }]
-        : [{ key: target.key, diff, hunks: [hunkObject] }];
-    return summarizeAttribution(entries).shares.filter((s) =>
-      side === 'left' ? s.leftLines > 0 : s.rightLines > 0,
-    );
-  })();
 
-  const source: RowCommit[] =
-    filter === 'accounting'
-      ? accounting.map((share) => share.commit)
-      : (log.data?.pages.flatMap((page) => page.commits) ?? []).map(
-          (commit: GitLogCommit): RowCommit => commit,
-        );
-  const needle = query.trim().toLowerCase();
-  const rows = source.filter(
-    (c) =>
-      needle === '' ||
-      c.subject.toLowerCase().includes(needle) ||
-      c.authorName.toLowerCase().includes(needle) ||
-      c.sha.startsWith(needle),
-  );
-  const groups = groupByDay(rows);
-  const openCommit = (sha: string) => {
-    workspace.open(commitUrl(user, sessionId, mine.repoId, sha));
-  };
-  const toggle = (sha: string) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(sha)) next.delete(sha);
-      else next.add(sha);
-      return next;
-    });
-  };
-  // The list is newest first, so the one nearer the top is the newer of two selected commits.
-  const chosen = rows.filter((c) => selected.has(c.sha));
-  const range = chosen.length === 2 ? chosen : undefined;
+  // j and k walk the list (the pane follows); both are ignored while typing in a field.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || isEditable(event.target)) return;
+      if (event.key !== 'j' && event.key !== 'k') return;
+      const at = commits.findIndex((c) => c.sha === current);
+      const to = event.key === 'j' ? Math.min(at + 1, commits.length - 1) : Math.max(at - 1, 0);
+      const next = commits[to];
+      if (next !== undefined && to !== at) {
+        event.preventDefault();
+        const updated = new URLSearchParams(params);
+        updated.set('commit', next.sha);
+        setParams(updated);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [commits, current, params, setParams]);
+
+  if (session.isError) return <Notice tone="error">{session.error.message}</Notice>;
+  if (session.isPending) return <Loading label="Loading session…" />;
+  if (repo === undefined) return <Notice>This repository is no longer in the session.</Notice>;
+
+  const remote = source.remote ?? repo.remotes[0]?.name ?? 'origin';
+  const title =
+    path === ''
+      ? `Commits on ${source.branch}`
+      : `Commits${isFollowing ? ' following' : ' touching'} ${path}`;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-2 text-sm">
-        <GitCommitHorizontal className="size-4 shrink-0 text-muted" aria-hidden />
-        <h1 className="font-semibold">{sideLabel} · commits not in the other side</h1>
-        <span className="text-xs text-muted">{sourceLabelOf(mine, repos)}</span>
-      </header>
-
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-canvas px-4 py-2 text-sm">
-        <div role="group" aria-label="Show" className="flex flex-wrap gap-1">
-          <FilterChip
-            active={filter === 'all'}
-            onClick={() => {
-              setFilter('all');
+      <ExploreHeader
+        where={repo.name}
+        picker={
+          <RefPicker
+            remotes={repo.remotes.map((r) => r.name)}
+            refs={refs.data?.refs}
+            isLoading={refs.isPending}
+            current={{ remote, name: source.branch }}
+            onOpen={(choice) => {
+              const next = toSource({
+                type: 'git',
+                repoId: source.repoId,
+                remote: choice.remote,
+                branch: choice.name,
+              });
+              workspace.open(commitsUrl(user, sessionId, next));
             }}
-          >
-            All diverging
-          </FilterChip>
-          <FilterChip
-            active={filter === 'touching'}
-            disabled={sidePath === undefined}
-            onClick={() => {
-              setFilter('touching');
-            }}
-          >
-            {sidePath === undefined ? 'Touching this file' : `Touching ${sidePath}`}
-          </FilterChip>
-          <FilterChip
-            active={filter === 'accounting'}
-            onClick={() => {
-              setFilter('accounting');
-            }}
-          >
-            Accounting for the changes shown
-          </FilterChip>
-        </div>
-        <input
-          type="search"
-          aria-label="Search commits"
-          placeholder="Search subject, author or SHA"
-          value={query}
-          className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5"
-          onChange={(event) => {
-            setQuery(event.target.value);
-          }}
-        />
-        <button
-          type="button"
-          aria-pressed={isSelecting}
-          className="touch-target rounded-md border border-line px-2 py-0.5 hover:bg-hover"
-          onClick={() => {
-            setSelecting((on) => !on);
-            setSelected(new Set());
-          }}
-        >
-          Select commits
-        </button>
-        {range !== undefined && (
-          <button
-            type="button"
-            className="touch-target rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-accent"
-            onClick={() => {
-              const [top, bottom] = range;
-              if (top && bottom) {
-                workspace.open(logUrl(user, sessionId, mine.repoId, top.sha, bottom.sha));
+          />
+        }
+        links={exploreLinks(user, sessionId, source, 'commits')}
+        onOpen={(url) => {
+          workspace.open(url);
+        }}
+      />
+      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
+        <section aria-label="Commit list" className="flex min-h-0 flex-col border-line md:border-r">
+          <CommitFilters
+            key={`${path}|${grep}|${author}|${notInBranch}|${isFollowing}|${isFirstParent}|${isTopoOrder}`}
+            path={path}
+            grep={grep}
+            author={author}
+            follow={isFollowing}
+            firstParent={isFirstParent}
+            topoOrder={isTopoOrder}
+            notInBranch={notInBranch}
+            onApply={(next) => {
+              const updated = new URLSearchParams(params);
+              for (const [key, value] of Object.entries(next)) {
+                if (value === undefined || value === '' || value === false) updated.delete(key);
+                else updated.set(key, value === true ? '1' : value);
               }
+              updated.delete('commit');
+              setParams(updated);
             }}
-          >
-            Log between these
-          </button>
-        )}
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto">
-        {filter !== 'accounting' && log.isPending && (
-          <p className="flex items-center gap-2 p-6 text-muted">
-            <LoaderCircle className="size-4 animate-spin" aria-hidden /> Reading commits…
-          </p>
-        )}
-        {filter === 'accounting' && visible.isPending && (
-          <p className="flex items-center gap-2 p-6 text-muted">
-            <LoaderCircle className="size-4 animate-spin" aria-hidden /> Finding what accounts for
-            the changes…
-          </p>
-        )}
-        {log.isError && (
-          <p role="alert" className="p-6 text-error">
-            {log.error.message}
-          </p>
-        )}
-        {rows.length === 0 && !log.isPending && !visible.isPending && (
-          <p className="p-6 text-center text-muted">
-            {filter === 'accounting'
-              ? 'No commit accounts for the changes shown here.'
-              : 'No commits match.'}
-          </p>
-        )}
-        <ul aria-label="Diverging commits">
-          {groups.map((group) => (
-            <GroupRows
-              key={group.day}
-              day={group.day}
-              commits={group.commits}
-              isSelecting={isSelecting}
-              selected={selected}
-              onToggle={toggle}
-              onOpen={openCommit}
-            />
-          ))}
-        </ul>
-        {filter !== 'accounting' && log.hasNextPage && (
-          <div className="flex justify-center p-3">
+          />
+          <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-1.5 text-xs text-muted">
+            <span className="truncate">{title}</span>
             <button
               type="button"
-              className="rounded-md border border-line px-3 py-1 text-sm hover:bg-hover disabled:opacity-50"
-              disabled={log.isFetchingNextPage}
+              className="touch-target rounded-md border border-line bg-accent-soft px-2 py-0.5 hover:bg-hover disabled:opacity-60"
+              disabled={picks.length === 0}
               onClick={() => {
-                void log.fetchNextPage();
+                workspace.open(seriesUrl(user, sessionId, source.repoId, picks), { isExact: true });
               }}
             >
-              Load more commits
+              {picks.length > 0 ? `Open the series (${picks.length})` : 'No picks yet'}
             </button>
           </div>
-        )}
+          <div className="min-h-0 flex-1 overflow-auto">
+            {log.isError && <Notice tone="error">{log.error.message}</Notice>}
+            {!log.data && !log.isError && <Loading label="Loading commits…" />}
+            {log.data !== undefined && commits.length === 0 && <Notice>No commits match.</Notice>}
+            {commits.length > 0 && (
+              <ul aria-label={title} className="divide-y divide-line">
+                {commits.map((commit) => {
+                  const isPicked = picks.includes(commit.sha);
+                  const isCurrent = commit.sha === current;
+                  return (
+                    <CommitRow
+                      key={commit.sha}
+                      commit={commit}
+                      isCurrent={isCurrent}
+                      isPicked={isPicked}
+                      onSelect={() => {
+                        select(commit.sha);
+                      }}
+                      onAddToSeries={() => {
+                        const next = withPick(picks, commit.sha);
+                        savePicks(user, sessionId, source.repoId, next);
+                        setPicks(next);
+                      }}
+                    />
+                  );
+                })}
+              </ul>
+            )}
+            {log.data?.hasMore === true && (
+              <div className="flex justify-center p-3">
+                <button
+                  type="button"
+                  className="touch-target rounded-md border border-line px-3 py-1.5 text-sm hover:bg-hover"
+                  onClick={() => {
+                    setPages((n) => n + 1);
+                  }}
+                >
+                  Show more commits
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+        <section aria-label="Selected commit" className="min-h-0 overflow-auto">
+          {current === '' ? (
+            <Notice>Choose a commit to see its patch.</Notice>
+          ) : (
+            <CommitDetails key={current} repoId={source.repoId} sha={current} />
+          )}
+        </section>
       </div>
     </div>
   );
 }
 
-function sourceLabelOf(source: GitSource, repos: Array<{ id: string; name: string }>): string {
-  const repo = repos.find((r) => r.id === source.repoId);
-  return `${repo?.name ?? 'repository'} @ ${shortSha(source.branch)}`;
-}
-
-function FilterChip({
-  active,
-  disabled,
-  onClick,
-  children,
+/** The narrowing controls of the list. Applied on submit, so the URL (and the list) changes once. */
+function CommitFilters({
+  path,
+  grep,
+  author,
+  follow: isFollowingInUrl,
+  firstParent: isFirstParentInUrl,
+  topoOrder: isTopoOrderInUrl,
+  notInBranch,
+  onApply,
 }: {
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: JSX.Element | string;
-}) {
+  path: string;
+  grep: string;
+  author: string;
+  follow: boolean;
+  firstParent: boolean;
+  topoOrder: boolean;
+  notInBranch: string;
+  onApply: (next: {
+    path?: string | undefined;
+    q?: string | undefined;
+    author?: string | undefined;
+    follow?: boolean | undefined;
+    firstParent?: boolean | undefined;
+    topo?: boolean | undefined;
+    notIn?: string | undefined;
+  }) => void;
+}): JSX.Element {
+  const [draftGrep, setDraftGrep] = useState(grep);
+  const [draftAuthor, setDraftAuthor] = useState(author);
+  const [draftPath, setDraftPath] = useState(path);
+  const [isFollowing, setFollowing] = useState(isFollowingInUrl);
+  const [isFirstParent, setFirstParent] = useState(isFirstParentInUrl);
+  const [isTopoOrder, setTopoOrder] = useState(isTopoOrderInUrl);
+  const submit = (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onApply({
+      path: draftPath.trim().replace(/^\/+|\/+$/g, '') || undefined,
+      q: draftGrep.trim() || undefined,
+      author: draftAuthor.trim() || undefined,
+      follow: isFollowing && draftPath.trim() !== '',
+      firstParent: isFirstParent,
+      topo: isTopoOrder,
+      notIn: notInBranch || undefined,
+    });
+  };
   return (
-    <button
-      type="button"
-      aria-pressed={active}
-      disabled={disabled}
-      className={clsx(
-        'touch-target rounded-full border px-2.5 py-0.5 disabled:opacity-50',
-        active ? 'border-accent bg-accent-soft text-accent' : 'border-line hover:bg-hover',
-      )}
-      onClick={onClick}
+    <form
+      aria-label="Filter commits"
+      onSubmit={submit}
+      className="flex flex-col gap-2 border-b border-line bg-surface p-3 text-sm"
     >
-      {children}
-    </button>
-  );
-}
-
-/** One day's heading and its commits. */
-function GroupRows({
-  day,
-  commits,
-  isSelecting,
-  selected,
-  onToggle,
-  onOpen,
-}: {
-  day: string;
-  commits: RowCommit[];
-  isSelecting: boolean;
-  selected: ReadonlySet<string>;
-  onToggle: (sha: string) => void;
-  onOpen: (sha: string) => void;
-}) {
-  return (
-    <>
-      <li className="sticky top-0 z-10 bg-canvas px-4 py-1">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-          {dayLabel(day)}
-        </h2>
-      </li>
-      {commits.map((commit) => {
-        const isChosen = selected.has(commit.sha);
-        const isMerge = (commit.parents?.length ?? 0) > 1;
-        return (
-          <li
-            key={commit.sha}
-            className={clsx(
-              'flex items-start gap-2 border-b border-line/60 px-4 py-2',
-              isChosen && 'bg-accent-soft/60',
-            )}
+      <input
+        aria-label="Message contains"
+        placeholder="Message contains"
+        value={draftGrep}
+        onChange={(event) => {
+          setDraftGrep(event.currentTarget.value);
+        }}
+        className="rounded-md border border-line bg-surface px-2 py-1 text-sm"
+      />
+      <input
+        aria-label="Author contains"
+        placeholder="Author contains"
+        value={draftAuthor}
+        onChange={(event) => {
+          setDraftAuthor(event.currentTarget.value);
+        }}
+        className="rounded-md border border-line bg-surface px-2 py-1 text-sm"
+      />
+      <input
+        aria-label="Only the folder or file"
+        placeholder="Only this folder or file"
+        value={draftPath}
+        onChange={(event) => {
+          setDraftPath(event.currentTarget.value);
+        }}
+        className="rounded-md border border-line bg-surface px-2 py-1 font-mono text-sm"
+      />
+      <label className="flex items-center gap-2 text-xs text-muted">
+        <input
+          type="checkbox"
+          checked={isFollowing}
+          disabled={draftPath.trim() === ''}
+          onChange={(event) => {
+            setFollowing(event.currentTarget.checked);
+          }}
+        />
+        Follow renames (one file)
+      </label>
+      <label className="flex items-center gap-2 text-xs text-muted">
+        <input
+          type="checkbox"
+          checked={isFirstParent}
+          onChange={(event) => {
+            setFirstParent(event.currentTarget.checked);
+          }}
+        />
+        First parent only
+      </label>
+      <label className="flex items-center gap-2 text-xs text-muted">
+        <input
+          type="checkbox"
+          checked={isTopoOrder}
+          onChange={(event) => {
+            setTopoOrder(event.currentTarget.checked);
+          }}
+        />
+        Topological order
+      </label>
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          className="touch-target rounded-md border border-line px-2.5 py-1 hover:bg-hover"
+        >
+          Apply
+        </button>
+        {notInBranch !== '' && (
+          <button
+            type="button"
+            className="touch-target rounded-md border border-line px-2.5 py-1 text-xs hover:bg-hover"
+            onClick={() => {
+              onApply({
+                path: draftPath.trim() || undefined,
+                q: draftGrep.trim() || undefined,
+                author: draftAuthor.trim() || undefined,
+                follow: isFollowing && draftPath.trim() !== '',
+                notIn: undefined,
+              });
+            }}
           >
-            {isSelecting && (
-              <input
-                type="checkbox"
-                aria-label={commit.subject}
-                checked={isChosen}
-                className="mt-1.5 size-4 shrink-0"
-                onChange={() => {
-                  onToggle(commit.sha);
-                }}
-              />
-            )}
-            <button
-              type="button"
-              className="touch-target flex min-h-14 min-w-0 flex-1 items-start gap-3 rounded text-left hover:bg-hover coarse:min-h-14"
-              onClick={() => {
-                if (isSelecting) onToggle(commit.sha);
-                else onOpen(commit.sha);
-              }}
-            >
-              <span
-                aria-hidden
-                className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-hover text-xs font-semibold text-muted"
-              >
-                {initials(commit.authorName)}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{commit.subject}</span>
-                  {isMerge && (
-                    <span className="rounded bg-hover px-1 text-[11px] text-muted">merge</span>
-                  )}
-                </span>
-                {commit.body !== undefined && commit.body !== '' && (
-                  <span className="block truncate text-xs text-muted">
-                    {firstLine(commit.body)}
-                  </span>
-                )}
-                <span className="block text-xs text-muted">
-                  {commit.authorName} · {formatDate(commit.authorDate)}{' '}
-                  <span className="font-mono">{shortSha(commit.sha)}</span>
-                </span>
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </>
+            Clear the range (not in {notInBranch})
+          </button>
+        )}
+      </div>
+    </form>
   );
-}
-
-/** Groups commits by the day they were committed, keeping the list's order. */
-function groupByDay(commits: RowCommit[]): Array<{ day: string; commits: RowCommit[] }> {
-  const groups: Array<{ day: string; commits: RowCommit[] }> = [];
-  for (const commit of commits) {
-    const day = commit.commitDate.slice(0, 10);
-    const last = groups[groups.length - 1];
-    if (last?.day === day) last.commits.push(commit);
-    else groups.push({ day, commits: [commit] });
-  }
-  return groups;
-}
-
-/** "Today", "Yesterday", or the date ("2 Jan 2026"). */
-function dayLabel(day: string): string {
-  const date = new Date(`${day}T12:00:00`);
-  const today = new Date();
-  const diffDays = Math.round(
-    (new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() -
-      new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()) /
-      86_400_000,
-  );
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-function initials(name: string): string {
-  const parts = name
-    .trim()
-    .split(/\s+/)
-    .filter((p) => p !== '');
-  return (
-    parts.length > 1
-      ? `${parts[0]?.[0] ?? ''}${parts.at(-1)?.[0] ?? ''}`
-      : (parts[0]?.slice(0, 2) ?? '')
-  ).toUpperCase();
-}
-
-function firstLine(text: string): string {
-  return text.split('\n').find((line) => line.trim() !== '') ?? '';
 }

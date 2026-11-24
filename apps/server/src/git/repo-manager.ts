@@ -265,6 +265,20 @@ export class RepoManager {
     return await this.#git.checkRemote(this.#repoDir(user, sessionId, repoId), name);
   }
 
+  /** Where a repo's clone is, and the cache scope its results belong to. Reads no ref. */
+  repoLocation(
+    user: string,
+    sessionId: string,
+    repoId: string,
+  ): { repoDir: string; cacheScope: { user: string; repoId: string } } {
+    this.#requireSession(user, sessionId);
+    const repo = this.#requireRepo(user, sessionId, repoId);
+    return {
+      repoDir: this.#repoDir(user, sessionId, repo.id),
+      cacheScope: { user, repoId: repo.id },
+    };
+  }
+
   /** Resolves a git side to its exact commit, on its remote (the clone's `origin` when none is named). */
   async resolveSnapshot(
     source: GitSource,

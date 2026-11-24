@@ -6,7 +6,7 @@ import { CompareForm } from '../components/compare-form.tsx';
 import { RepoRemotes } from '../components/repo-remotes.tsx';
 import { useServerInfo } from '../lib/server.ts';
 import { useRepoActions, useSessionDetail, useSessionParams } from '../lib/session.ts';
-import { foldersUrl, logUrl, upstreamUrl } from '../lib/urls.ts';
+import { betweenUrl, branchesUrl, codeUrl, commitsUrl, foldersUrl } from '../lib/urls.ts';
 import { useWorkspace } from '../lib/workspace-context.ts';
 
 const card = 'rounded-lg border border-line bg-surface';
@@ -68,13 +68,63 @@ export function SessionOverviewPage(): JSX.Element {
             submitLabel="Compare folders"
             onSubmit={openFolders}
             secondary={{
-              label: 'Check upstream commits',
+              label: 'Commits between',
               onSubmit: (l, r) => {
-                workspace.open(upstreamUrl(user, sessionId, l, r));
+                // Left's commits that Right lacks are the ones to bring across (see Between).
+                workspace.open(
+                  betweenUrl(
+                    user,
+                    sessionId,
+                    l.repoId,
+                    { remote: l.remote ?? 'origin', branch: l.branch },
+                    { remote: r.remote ?? 'origin', branch: r.branch },
+                  ),
+                );
               },
             }}
           />
         </section>
+
+        {repos.length > 0 && (
+          <section aria-label="Explore" className={clsx(card, 'space-y-2 p-4')}>
+            <h2 className="text-base font-semibold">Explore a repository</h2>
+            <p className="text-xs text-muted">
+              Browse the code of a repo&apos;s default branch, or see every branch and tag of its
+              remotes.
+            </p>
+            <ul className="divide-y divide-line">
+              {repos.map((repo) => (
+                <li key={repo.id} className="flex flex-wrap items-center gap-2 py-2">
+                  <span className="mr-auto min-w-0 truncate text-sm font-medium">{repo.name}</span>
+                  <button
+                    type="button"
+                    className="touch-target rounded-md border border-line px-2.5 py-1 text-sm hover:bg-hover"
+                    onClick={() => {
+                      workspace.open(
+                        codeUrl(user, sessionId, {
+                          type: 'git',
+                          repoId: repo.id,
+                          branch: repo.defaultBranch,
+                        }),
+                      );
+                    }}
+                  >
+                    Browse code
+                  </button>
+                  <button
+                    type="button"
+                    className="touch-target rounded-md border border-line px-2.5 py-1 text-sm hover:bg-hover"
+                    onClick={() => {
+                      workspace.open(branchesUrl(user, sessionId, repo.id));
+                    }}
+                  >
+                    Branches
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section aria-label="Commit log" className={clsx(card, 'space-y-2 p-4')}>
           <h2 className="text-base font-semibold">Commit log</h2>
@@ -85,7 +135,14 @@ export function SessionOverviewPage(): JSX.Element {
           <CommitLogForm
             repos={repos}
             onOpen={(repoId, top, bottom) => {
-              workspace.open(logUrl(user, sessionId, repoId, top, bottom));
+              workspace.open(
+                commitsUrl(
+                  user,
+                  sessionId,
+                  { type: 'git', repoId, branch: top },
+                  { notIn: { type: 'git', repoId, branch: bottom } },
+                ),
+              );
             }}
           />
         </section>

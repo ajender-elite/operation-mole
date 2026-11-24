@@ -1,168 +1,217 @@
-import type { GitLog, GitLogRequest, GitLogCommit } from '@om/shared';
+import type { CommitPatch, GitLogRequest } from '@om/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  commitInfo,
+  logCommit,
+  logHandler,
+  refEntry,
+  refsHandler,
+} from '../test/explore-handlers.ts';
 import { repoInfo, sessionDetailHandler } from '../test/handlers.ts';
 import { renderApp } from '../test/render.tsx';
 import { server } from '../test/server.ts';
-import { fileDiffHandlers } from '../test/file-diff-handlers.ts';
 
-const L = '1'.repeat(40); // Left commit (pinned)
-const R = '2'.repeat(40); // Right commit (pinned)
-const C1 = 'a'.repeat(40); // Left-only, changed the file
-const C2 = 'b'.repeat(40); // Left-only, changed something else (the newer of the two below)
-const C3 = 'c'.repeat(40); // Left-only, earlier, a day before
+/*
+ * The Commits tab: the commits of a ref (or a path, or a range), newest first, with the selected commit's
+ * patch beside them. Range Log and the old Commit List, and the History tab, are this tab's older URLs.
+ */
 
-const commit = (
-  sha: string,
-  subject: string,
-  commitDate: string,
-  over: Partial<GitLogCommit> = {},
-): GitLogCommit => ({
-  sha,
-  subject,
-  authorName: 'Ada',
-  authorEmail: 'ada@example.com',
-  authorDate: commitDate,
-  committerName: 'Ada',
-  committerEmail: 'ada@example.com',
-  commitDate,
-  parents: ['9'.repeat(40)],
-  ...over,
+const BASE = '/u/karthik/s/s1';
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+const SHA_C = 'c'.repeat(40);
+
+/** A commit's patch, for the pane (no files: only its details are shown). */
+const patchOf = (sha: string, subject: string): CommitPatch => ({
+  commit: sha,
+  details: { ...commitInfo(sha, subject), parents: ['9'.repeat(40)] },
+  baseParent: '9'.repeat(40),
+  truncated: false,
+  files: [],
 });
 
-const commits: GitLogCommit[] = [
-  commit(C1, 'Change the file', '2026-01-02T10:00:00Z', { body: 'Why the file changed.' }),
-  commit(C2, 'Change something else', '2026-01-02T09:00:00Z'),
-  commit(C3, 'Earlier work', '2025-12-30T09:00:00Z', { parents: ['8'.repeat(40), '7'.repeat(40)] }),
-];
-
-let logRequests: GitLogRequest[];
+let requests: GitLogRequest[];
+/** The list's requests: a selected commit also asks for its own one-commit log (limit 1), which is not the list. */
+const listRequests = () => requests.filter((r) => r.limit !== 1);
 
 beforeEach(() => {
-  logRequests = [];
+  requests = [];
   server.use(
     sessionDetailHandler({ repos: [repoInfo()] }),
-    http.post('*/api/git/log', async ({ request }) => {
-      const body = (await request.json()) as GitLogRequest;
-      logRequests.push(body);
-      const page = body.paths ? commits.filter((c) => c.sha === C1) : commits;
-      return HttpResponse.json<GitLog>({
-        include: { commit: body.source.branch, ref: body.source.branch, label: 'app' },
-        ...(body.exclude
-          ? { exclude: { commit: body.exclude.branch, ref: body.exclude.branch, label: 'app' } }
-          : {}),
-        commits: page,
-        hasMore: false,
-        total: page.length,
-      });
+    http.post('*/api/git/show', async ({ request }) => {
+      const body = (await request.json()) as { source: { branch: string } };
+      return HttpResponse.json(
+        patchOf(
+          body.source.branch,
+          body.source.branch === SHA_A ? 'Fix the folder' : 'Add the folder',
+        ),
+      );
     }),
-    ...fileDiffHandlers(() => ({
-      leftCommit: L,
-      rightCommit: R,
-      leftPath: 'a.txt',
-      rightPath: 'a.txt',
-      content: 'text',
-      hunks: [
-        {
-          header: '@@ -1 +1 @@',
-          leftStart: 1,
-          leftCount: 1,
-          rightStart: 1,
-          rightCount: 1,
-          lines: [
-            { kind: 'removed', text: 'old', leftLine: 1, commit: C1 },
-            { kind: 'added', text: 'new', rightLine: 1 },
-          ],
-        },
-      ],
-      commits: [{ ...commits[0]!, inLeft: true, inRight: false }],
-    })),
   );
 });
 
-const url = (side: 'left' | 'right') =>
-  `/u/karthik/s/s1/commits?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev` +
-  `&leftCommit=${L}&rightCommit=${R}&leftPath=a.txt&rightPath=a.txt&side=${side}`;
+const commits = [logCommit(SHA_A, 'Fix the folder'), logCommit(SHA_B, 'Add the folder')];
 
-const list = () => screen.findByRole('list', { name: 'Diverging commits' });
-
-describe('Commit List tab', () => {
-  it('lists the commits this side has and the other does not, grouped by day', async () => {
-    renderApp(url('left'));
-    const rows = await within(await list()).findAllByRole('button', { name: /Change|Earlier/ });
-    expect(rows).toHaveLength(3);
-    expect(screen.getByRole('heading', { name: '2 Jan 2026' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '30 Dec 2025' })).toBeInTheDocument();
-    expect(logRequests.at(-1)).toMatchObject({ source: { branch: L }, exclude: { branch: R } });
+describe('Commits tab: the list', () => {
+  it('lists the commits that touched the path, and asks git only for that path', async () => {
+    server.use(logHandler(commits, requests));
+    renderApp(`${BASE}/commits?repo=r1&ref=main&path=src`);
+    const list = await screen.findByRole('list', { name: 'Commits touching src' });
+    expect(within(list).getByText('Fix the folder')).toBeInTheDocument();
+    expect(within(list).getByText('Add the folder')).toBeInTheDocument();
+    expect(listRequests()[0]?.paths).toEqual(['src']);
   });
 
-  it('touching the file: asks for the commits that changed the file only', async () => {
-    const user = userEvent.setup();
-    renderApp(url('left'));
-    await list();
-    await user.click(screen.getByRole('button', { name: 'Touching a.txt' }));
+  it('selects a commit into the pane, in this tab, and shows its patch there', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(`${BASE}/commits?repo=r1&ref=main`);
+    await userEvent.click(await screen.findByRole('button', { name: /Add the folder/ }));
     await waitFor(() => {
-      expect(logRequests.some((r) => r.paths?.[0] === 'a.txt')).toBe(true);
+      expect(new URLSearchParams(router.state.location.search).get('commit')).toBe(SHA_B);
     });
-    const rows = within(await list()).getAllByRole('button', { name: /Change|Earlier/ });
-    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining('Change the file')]);
+    expect(router.state.location.pathname).toBe(`${BASE}/commits`);
+    const pane = screen.getByRole('region', { name: 'Selected commit' });
+    expect(
+      await within(pane).findByRole('heading', { name: /Add the folder/ }),
+    ).toBeInTheDocument();
   });
 
-  it('accounting for the changes shown: lists the commits that account for the lines on screen', async () => {
-    const user = userEvent.setup();
-    renderApp(url('left'));
-    await list();
-    await user.click(screen.getByRole('button', { name: 'Accounting for the changes shown' }));
-    const rows = await within(await list()).findAllByRole('button', { name: /Change|Earlier/ });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent('Change the file');
-  });
-
-  it('search filters the loaded commits by subject', async () => {
-    const user = userEvent.setup();
-    renderApp(url('left'));
-    await list();
-    await user.type(screen.getByRole('searchbox', { name: 'Search commits' }), 'something');
-    const rows = within(await list()).getAllByRole('button', { name: /Change|Earlier/ });
-    expect(rows.map((r) => r.textContent)).toEqual([
-      expect.stringContaining('Change something else'),
-    ]);
-  });
-
-  it('selects two commits and opens the range between them, newer on top', async () => {
-    const user = userEvent.setup();
-    const app = renderApp(url('left'));
-    await list();
-    await user.click(screen.getByRole('button', { name: 'Select commits' }));
-    await user.click(screen.getByRole('checkbox', { name: /Change something else/ }));
-    await user.click(screen.getByRole('checkbox', { name: /Earlier work/ }));
-    await user.click(screen.getByRole('button', { name: 'Log between these' }));
+  it('moves the selection with j and k', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(`${BASE}/commits?repo=r1&ref=main&commit=${SHA_A}`);
+    await screen.findByRole('list', { name: 'Commits on main' });
+    await userEvent.keyboard('j');
     await waitFor(() => {
-      expect(app.location().pathname).toMatch(/\/log$/);
+      expect(new URLSearchParams(router.state.location.search).get('commit')).toBe(SHA_B);
     });
-    const params = new URLSearchParams(app.location().search);
-    expect(params.get('top')).toBe(C2);
-    expect(params.get('bottom')).toBe(C3);
-  });
-
-  it('opens a commit in its own tab from its row, and leaves the list where it is', async () => {
-    const user = userEvent.setup();
-    const app = renderApp(url('left'));
-    const rows = await within(await list()).findAllByRole('button', {
-      name: /Change something else/,
-    });
-    await user.click(rows[0]!);
+    await userEvent.keyboard('k');
     await waitFor(() => {
-      expect(app.location().pathname).toMatch(/\/commit$/);
+      expect(new URLSearchParams(router.state.location.search).get('commit')).toBe(SHA_A);
     });
-    expect(new URLSearchParams(app.location().search).get('commit')).toBe(C2);
   });
 
-  it('lists the Right side from the other direction', async () => {
-    renderApp(url('right'));
-    await list();
-    expect(logRequests.at(-1)).toMatchObject({ source: { branch: R }, exclude: { branch: L } });
+  it('shows the next page when asked for more', async () => {
+    server.use(logHandler(commits, requests, true));
+    renderApp(`${BASE}/commits?repo=r1&ref=main`);
+    await userEvent.click(await screen.findByRole('button', { name: 'Show more commits' }));
+    await waitFor(() => {
+      expect(listRequests().at(-1)?.limit).toBe(100);
+    });
+  });
+});
+
+describe('Commits tab: narrowing the list', () => {
+  it('applies a message filter from the form, to the URL and to git', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(`${BASE}/commits?repo=r1&ref=main`);
+    await screen.findByRole('list', { name: 'Commits on main' });
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message contains' }), 'fix');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => {
+      expect(new URLSearchParams(router.state.location.search).get('q')).toBe('fix');
+    });
+    await waitFor(() => {
+      expect(listRequests().at(-1)?.grep).toBe('fix');
+    });
+  });
+
+  it('follows renames only for one file: the option is off until a path is given', async () => {
+    server.use(logHandler(commits, requests));
+    renderApp(`${BASE}/commits?repo=r1&ref=main`);
+    await screen.findByRole('list', { name: 'Commits on main' });
+    expect(screen.getByRole('checkbox', { name: /Follow renames/ })).toBeDisabled();
+  });
+
+  it('asks for the commits following one file through its renames', async () => {
+    server.use(logHandler(commits, requests));
+    renderApp(`${BASE}/commits?repo=r1&ref=main&path=renamed.txt&follow=1`);
+    await screen.findByRole('list', { name: /following renamed.txt/ });
+    expect(listRequests().at(-1)).toMatchObject({ paths: ['renamed.txt'], follow: true });
+  });
+});
+
+describe('Commits tab: older URLs', () => {
+  it('sends the History tab of a path to the Commits tab, with the path', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(`${BASE}/history?repo=r1&ref=main&path=src`);
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe(`${BASE}/commits`);
+    });
+    expect(new URLSearchParams(router.state.location.search).get('path')).toBe('src');
+  });
+
+  it('sends the Range Log of top down to bottom to the Commits tab, as the commits not in bottom', async () => {
+    server.use(logHandler([logCommit(SHA_C, 'Only in top')], requests));
+    const { router } = renderApp(`${BASE}/log?repo=r1&top=aaa&bottom=bbb`);
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe(`${BASE}/commits`);
+    });
+    const params = new URLSearchParams(router.state.location.search);
+    expect(params.get('ref')).toBe('aaa');
+    expect(params.get('notIn')).toBe('bbb');
+    await screen.findByRole('list', { name: /not in bbb|Commits on aaa/ });
+    expect(listRequests().at(-1)?.exclude).toMatchObject({ branch: 'bbb' });
+  });
+
+  it('sends the Commit List of a side to the Commits tab, as that commit not in the other side', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(
+      `${BASE}/commits?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev&leftCommit=${SHA_A}&rightCommit=${SHA_B}&side=left`,
+    );
+    await waitFor(() => {
+      expect(router.state.location.search).not.toContain('side=');
+    });
+    const params = new URLSearchParams(router.state.location.search);
+    expect(params.get('ref')).toBe(SHA_A);
+    expect(params.get('notIn')).toBe(SHA_B);
+  });
+});
+
+describe('Commits tab: choosing another branch or tag', () => {
+  it('opens the commits of the branch chosen, in a tab of its own', async () => {
+    server.use(refsHandler([refEntry('origin', 'main'), refEntry('origin', 'dev')]));
+    const { router } = renderApp(`${BASE}/commits?repo=r1&ref=main`);
+    await screen.findByRole('option', { name: 'dev' });
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Branch or tag' }), 'dev');
+    await waitFor(() => {
+      expect(new URLSearchParams(router.state.location.search).get('ref')).toBe('dev');
+    });
+    expect(router.state.location.pathname).toBe(`${BASE}/commits`);
+  });
+});
+
+describe('Commits tab: first parent and topological order', () => {
+  it('asks git for first-parent history and topological order when the form says so', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(`${BASE}/commits?repo=r1&ref=main`);
+    await screen.findByRole('list', { name: 'Commits on main' });
+    await userEvent.click(screen.getByRole('checkbox', { name: 'First parent only' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Topological order' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => {
+      expect(new URLSearchParams(router.state.location.search).get('firstParent')).toBe('1');
+    });
+    expect(new URLSearchParams(router.state.location.search).get('topo')).toBe('1');
+    await waitFor(() => {
+      expect(listRequests().at(-1)?.firstParent).toBe(true);
+    });
+    expect(listRequests().at(-1)?.topoOrder).toBe(true);
+  });
+
+  it('keeps both choices when the page is reloaded, and unticking them clears them', async () => {
+    server.use(logHandler(commits, requests));
+    const { router } = renderApp(`${BASE}/commits?repo=r1&ref=main&firstParent=1&topo=1`);
+    await screen.findByRole('list', { name: 'Commits on main' });
+    expect(screen.getByRole('checkbox', { name: 'First parent only' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Topological order' })).toBeChecked();
+    await userEvent.click(screen.getByRole('checkbox', { name: 'First parent only' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => {
+      expect(new URLSearchParams(router.state.location.search).get('firstParent')).toBeNull();
+    });
+    expect(new URLSearchParams(router.state.location.search).get('topo')).toBe('1');
   });
 });

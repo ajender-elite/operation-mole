@@ -1,23 +1,57 @@
-import type { CommitInfo, FolderComparison, GitTreeEntry, SnapshotFileDiff } from '@om/shared';
+import {
+  type CommitInfo,
+  type GitCherryPick,
+  type FolderComparison,
+  type GitContains,
+  type GitFile,
+  type GitFiles,
+  type GitGrep,
+  type GitPatchIds,
+  type GitRefs,
+  type GitTree,
+  type GitTreeEntry,
+  type GitTreeNode,
+  type SnapshotFileDiff,
+  GitCherryPickSchema,
+  GitContainsSchema,
+  GitFilesSchema,
+  GitGrepSchema,
+  GitPatchIdsSchema,
+  GitRefsSchema,
+  GitTreeSchema,
+  GitFileSchema,
+} from '@om/shared';
+import { z } from 'zod';
+import { GitBlameSchema } from '@om/shared';
 import { compareTreeLeaves } from '../compare/git-trees.ts';
 import { createLimiter } from '../compare/limit.ts';
+import { compareNames } from '../compare/sort.ts';
+import type { AnalysisCache, CacheScope } from '../cache/analysis-cache.ts';
 import { CompareInputError, NotFoundError } from '../errors.ts';
 import type { GitService } from '../git/git-service.ts';
 import type { ResolvedSnapshot } from '../git/repo-manager.ts';
 import { parseBlameLines } from '../snapshot/blame-parse.ts';
 import { annotateRenames, type Rename } from '../snapshot/annotate-renames.ts';
 import { lineRanges } from '../snapshot/diff-parse.ts';
-import { objectView, withScratchObjects, type ObjectView } from '../snapshot/object-view.ts';
+import { objectView, withScratchObjects } from '../snapshot/object-view.ts';
 import type { CommitRecord } from '../snapshot/commit-records.ts';
 import type { SnapshotAnalyzer } from '../snapshot/snapshot-analyzer.ts';
 import { parseMergeTree } from './merge-tree-parse.ts';
 import { COMMIT_FORMAT, parseMarkedCommitRecords } from '../snapshot/commit-records.ts';
 import { listLeaves, prefetchTree, readLinkTargets } from './trees.ts';
+import { cherryPickSeries } from './cherry-pick.ts';
+import { containingRefs, hasAheadBehind, listRefs } from './refs.ts';
+import { grepCommit, type GrepOptions } from './grep.ts';
+import { patchIdsOf, MAX_PATCH_ID_COMMITS } from './patch-ids.ts';
+import { objectTypes } from './commit-check.ts';
+import { readMergedFile } from './merged-file.ts';
 
-/** Conflicted files whose merged text is returned, and the largest file read. */
+/** Conflicted files whose merged text is returned. */
 const MAX_CONFLICT_FILES = 10;
-const MAX_CONFLICT_BYTES = 8 * 1024 * 1024;
-const BINARY_SNIFF_BYTES = 8000;
+/** Cached series results with more conflicted text than this are recomputed rather than stored. */
+const MAX_CACHED_CONFLICT_CHARS = 1024 * 1024;
+/** Paths a `files` listing keeps (a huge tree is reported as truncated). */
+const MAX_FILE_PATHS = 200_000;
 
 /** What a merge produces: whether it is clean, what it changes, and what conflicts. */
 export type GitMergeOutput = {
@@ -40,11 +74,20 @@ export type BlameOutput = {
   commits: CommitInfo[];
 };
 
+/** Blame as cached: the same shape as the API response, without the commit and path. */
+const BlameOutputSchema = z.object({
+  lines: GitBlameSchema.shape.lines,
+  commits: GitBlameSchema.shape.commits,
+});
+
 export type TreesOutput = {
   entries: GitTreeEntry[];
   renames: Rename[];
   folder: FolderComparison;
 };
+
+/** A repo's refs need only its clone and the scope its cache entries belong to. */
+export type RepoLocation = { repoDir: string; cacheScope: CacheScope };
 
 /** Ordinary code-point order, so paths sort the same on every machine. */
 const byPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -58,12 +101,19 @@ export class GitPrimitives {
   readonly #git: GitService;
   readonly #snapshots: SnapshotAnalyzer;
   readonly #scratchDir: string;
+  readonly #cache: AnalysisCache;
   readonly #limit = createLimiter(4);
+  #gitVersion: Promise<string> | undefined;
 
-  constructor(git: GitService, snapshots: SnapshotAnalyzer, options: { scratchDir: string }) {
+  constructor(
+    git: GitService,
+    snapshots: SnapshotAnalyzer,
+    options: { scratchDir: string; cache: AnalysisCache },
+  ) {
     this.#git = git;
     this.#snapshots = snapshots;
     this.#scratchDir = options.scratchDir;
+    this.#cache = options.cache;
   }
 
   /** The best common ancestor of two commits (`git merge-base`), or null when they share none. */
@@ -110,7 +160,22 @@ export class GitPrimitives {
    * Who last changed each line of a file at a commit (`git blame --porcelain`), all lines or the
    * given ones. A line's origin is that commit's line and path, so renames are visible.
    */
-  async blame(
+  blame(
+    snapshot: ResolvedSnapshot,
+    filePath: string,
+    lines: readonly number[] | undefined,
+    signal?: AbortSignal,
+  ): Promise<BlameOutput> {
+    // Blame of one commit never changes, so it is cached by commit, path and the lines asked for.
+    return this.#cache.remember(
+      snapshot.cacheScope,
+      `blame|${snapshot.commit}|${filePath}|${lines?.join(',') ?? ''}`,
+      BlameOutputSchema,
+      () => this.#blameUncached(snapshot, filePath, lines, signal),
+    );
+  }
+
+  async #blameUncached(
     snapshot: ResolvedSnapshot,
     filePath: string,
     lines: readonly number[] | undefined,
@@ -213,7 +278,7 @@ export class GitPrimitives {
       );
       const conflictedFiles: Array<{ path: string; text: string | null }> = [];
       for (const path of conflicted.slice(0, MAX_CONFLICT_FILES)) {
-        const file = await this.#readMerged(scratch, tree, path, opt);
+        const file = await readMergedFile(this.#git, scratch, tree, path, opt);
         if (file !== undefined) conflictedFiles.push({ path, text: file });
       }
       return {
@@ -229,14 +294,22 @@ export class GitPrimitives {
 
   /**
    * The commits on each side of `left...right` (after `exclude`, when given), each marked as on one
-   * side, or as making the same change as a commit on the other side (`--cherry-mark`). Newest first.
+   * side, or as making the same change as a commit on the other side (`--cherry-mark`). Newest first,
+   * at most `limit` of them (`truncated` says whether more exist).
    */
   async patchEquivalents(
     left: ResolvedSnapshot,
     right: ResolvedSnapshot,
     exclude: ResolvedSnapshot | undefined,
+    options: { withBody: boolean; limit: number },
     signal?: AbortSignal,
-  ): Promise<Array<{ commit: CommitRecord; mark: 'left' | 'right' | 'equivalent' }>> {
+  ): Promise<{
+    commits: Array<{
+      commit: CommitRecord & { body?: string | undefined };
+      mark: 'left' | 'right' | 'equivalent';
+    }>;
+    truncated: boolean;
+  }> {
     const opt = signal ? { signal } : {};
     const view = objectView(left.repoDir, right.repoDir);
     const args = [
@@ -245,41 +318,21 @@ export class GitPrimitives {
       '--left-right',
       '--cherry-mark',
       '--no-merges',
-      `--format=%m%x1f${COMMIT_FORMAT}`,
+      `--max-count=${options.limit + 1}`,
+      `--format=%m%x1f${COMMIT_FORMAT}${options.withBody ? '%x1f%B' : ''}`,
       `${left.commit}...${right.commit}`,
     ];
     if (exclude !== undefined) args.push(`^${exclude.commit}`);
     args.push('--');
     const { stdout } = await this.#git.run(view.cwd, args, { env: view.env, ...opt });
-    return parseMarkedCommitRecords(stdout).map(({ mark, commit }) => ({
-      commit,
-      mark: mark === '=' ? 'equivalent' : mark === '<' ? 'left' : 'right',
-    }));
-  }
-
-  /** The merged text of one conflicted file (with its conflict markers), or undefined when it is absent or binary. */
-  async #readMerged(
-    scratch: ObjectView,
-    tree: string,
-    path: string,
-    opt: { signal?: AbortSignal },
-  ): Promise<string | null | undefined> {
-    try {
-      const { stdout } = await this.#git.runBuffer(
-        scratch.cwd,
-        ['cat-file', 'blob', `${tree}:${path}`],
-        {
-          env: scratch.env,
-          maxBytes: MAX_CONFLICT_BYTES,
-          ...opt,
-        },
-      );
-      return stdout.subarray(0, BINARY_SNIFF_BYTES).includes(0) ? null : stdout.toString('utf8');
-    } catch (err) {
-      if (opt.signal?.aborted === true) throw err;
-      // Modify/delete conflicts have no file in the result; the messages say so.
-      return undefined;
-    }
+    const parsed = parseMarkedCommitRecords(stdout, options.withBody);
+    return {
+      commits: parsed.slice(0, options.limit).map(({ mark, commit, body }) => ({
+        commit: body === undefined ? commit : { ...commit, body },
+        mark: mark === '=' ? 'equivalent' : mark === '<' ? 'left' : 'right',
+      })),
+      truncated: parsed.length > options.limit,
+    };
   }
 
   /**
@@ -340,6 +393,222 @@ export class GitPrimitives {
         rightSnapshot: { commit: right.commit, ref: right.ref },
       },
     };
+  }
+
+  /**
+   * One folder of a commit's tree, one level deep (`git ls-tree`): its folders and files, folders first,
+   * each group in Folder Compare's order. Reads object ids only, so no blob is fetched. The root is `''`.
+   * Cached by commit and folder (a commit's tree never changes).
+   */
+  tree(snapshot: ResolvedSnapshot, folder: string, signal?: AbortSignal): Promise<GitTree> {
+    return this.#cache.remember(
+      snapshot.cacheScope,
+      `tree|${snapshot.commit}|${folder}`,
+      GitTreeSchema,
+      () => this.#listTree(snapshot, folder, signal),
+    );
+  }
+
+  async #listTree(
+    snapshot: ResolvedSnapshot,
+    folder: string,
+    signal?: AbortSignal,
+  ): Promise<GitTree> {
+    const opt = signal ? { signal } : {};
+    if (folder !== '') {
+      // The folder's own entry tells whether it exists and is a tree (a file, or nothing, is refused).
+      const { stdout } = await this.#git.run(
+        snapshot.repoDir,
+        ['ls-tree', '-z', snapshot.commit, '--', folder],
+        opt,
+      );
+      const record = stdout.split('\0').find((r) => r.endsWith(`\t${folder}`));
+      if (record === undefined) {
+        throw new NotFoundError(`${folder} does not exist in ${snapshot.label}`);
+      }
+      if (!/^\d+ tree /.test(record)) {
+        throw new CompareInputError(`${folder} is not a folder in ${snapshot.label}`);
+      }
+    }
+    // `commit:folder` lists that tree's entries, with names relative to it.
+    const target = folder === '' ? snapshot.commit : `${snapshot.commit}:${folder}`;
+    const { stdout } = await this.#git.run(snapshot.repoDir, ['ls-tree', '-z', target], opt);
+    const entries: GitTreeNode[] = [];
+    for (const record of stdout.split('\0')) {
+      const match = /^(\d+) (\S+) (\S+)\t([\s\S]*)$/.exec(record);
+      if (!match) continue;
+      const [, mode = '', type = '', oid = '', name = ''] = match;
+      const kind =
+        type === 'tree'
+          ? 'directory'
+          : type === 'commit'
+            ? 'submodule'
+            : mode === '120000'
+              ? 'symlink'
+              : 'file';
+      entries.push({ name, path: folder === '' ? name : `${folder}/${name}`, kind, oid });
+    }
+    entries.sort((a, b) => {
+      const byKind = Number(b.kind === 'directory') - Number(a.kind === 'directory');
+      return byKind || compareNames(a.name, b.name);
+    });
+    return { commit: snapshot.commit, path: folder, entries };
+  }
+
+  /**
+   * Every file path of a commit, sorted (`ls-tree -r`, for go-to-file). No blob is read. Cached by
+   * commit. A commit with more than the cap is listed up to it, with `truncated` set.
+   */
+  files(snapshot: ResolvedSnapshot, signal?: AbortSignal): Promise<GitFiles> {
+    const opt = signal ? { signal } : {};
+    return this.#cache.remember(
+      snapshot.cacheScope,
+      `files|${snapshot.commit}`,
+      GitFilesSchema,
+      async () => {
+        const { stdout } = await this.#git.run(
+          snapshot.repoDir,
+          ['ls-tree', '-r', '--name-only', '-z', snapshot.commit],
+          opt,
+        );
+        const all = stdout
+          .split('\0')
+          .filter((p) => p !== '')
+          .sort(byPath);
+        return {
+          commit: snapshot.commit,
+          paths: all.slice(0, MAX_FILE_PATHS),
+          truncated: all.length > MAX_FILE_PATHS,
+        };
+      },
+    );
+  }
+
+  /** One file of a commit, whole: its text, or why there is none (binary, too large). Cached by blob. */
+  async file(snapshot: ResolvedSnapshot, filePath: string, signal?: AbortSignal): Promise<GitFile> {
+    const content = await this.#snapshots.readFile(snapshot, filePath, signal);
+    return GitFileSchema.parse({ commit: snapshot.commit, path: filePath, ...content });
+  }
+
+  /**
+   * Lines of a commit that match a query, with context (`git grep`). Cached by commit and query. The
+   * tree's blobs are fetched once first, since a blob-less clone would otherwise fetch them one at a time.
+   */
+  grep(snapshot: ResolvedSnapshot, options: GrepOptions, signal?: AbortSignal): Promise<GitGrep> {
+    const opt = signal ? { signal } : {};
+    return this.#cache.remember(
+      snapshot.cacheScope,
+      `grep|${snapshot.commit}|${JSON.stringify(options)}`,
+      GitGrepSchema,
+      async () => {
+        await prefetchTree(this.#git, snapshot, opt);
+        const found = await grepCommit(this.#git, snapshot, options, opt);
+        return { commit: snapshot.commit, matches: found.matches, truncated: found.truncated };
+      },
+    );
+  }
+
+  /**
+   * Every branch and tag of every remote of a repo, newest first within each remote. With `compareTo`,
+   * each branch also carries how far it is ahead of and behind that commit (git 2.41 and later; older
+   * git gives no counts). Not cached: refs move on every fetch.
+   */
+  async refs(
+    repo: RepoLocation,
+    compareTo: ResolvedSnapshot | undefined,
+    signal?: AbortSignal,
+  ): Promise<GitRefs> {
+    const opt = signal ? { signal } : {};
+    const isCounted = compareTo !== undefined && hasAheadBehind(await this.#version());
+    const refs = await listRefs(this.#git, repo.repoDir, {
+      ...opt,
+      compareTo: compareTo?.commit,
+      withAheadBehind: isCounted,
+    });
+    return GitRefsSchema.parse({
+      refs,
+      ...(compareTo === undefined
+        ? {}
+        : { compareTo: { commit: compareTo.commit, ref: compareTo.ref, label: compareTo.label } }),
+    });
+  }
+
+  /** Every branch and tag (of any remote) whose history includes the commit. Not cached: refs move. */
+  async contains(snapshot: ResolvedSnapshot, signal?: AbortSignal): Promise<GitContains> {
+    const refs = await containingRefs(
+      this.#git,
+      snapshot.repoDir,
+      snapshot.commit,
+      signal ? { signal } : {},
+    );
+    return GitContainsSchema.parse({ commit: snapshot.commit, refs });
+  }
+
+  /**
+   * The patch id of each commit (`git patch-id --stable`): equal ids mean the same change. Null for a
+   * merge or an empty commit. Cached by the commit list (the commits are SHAs, which never change).
+   */
+  patchIds(
+    snapshot: ResolvedSnapshot,
+    commits: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<GitPatchIds> {
+    const opt = signal ? { signal } : {};
+    return this.#cache.remember(
+      snapshot.cacheScope,
+      `patch-ids|${commits.join(',')}`,
+      GitPatchIdsSchema,
+      async () => {
+        if (commits.length > MAX_PATCH_ID_COMMITS) {
+          throw new CompareInputError(`At most ${MAX_PATCH_ID_COMMITS} commits at a time`);
+        }
+        const types = await objectTypes(this.#git, snapshot.repoDir, commits, opt);
+        for (const [index, commit] of commits.entries()) {
+          if (types[index] === 'missing')
+            throw new NotFoundError(`${commit} is not in this repository`);
+          if (types[index] !== 'commit') throw new CompareInputError(`${commit} is not a commit`);
+        }
+        const ids = await patchIdsOf(this.#git, snapshot.repoDir, commits, opt);
+        return {
+          results: commits.map((commit) => ({ commit, patchId: ids.get(commit) ?? null })),
+        };
+      },
+    );
+  }
+
+  /**
+   * Would `git cherry-pick <commits…>` onto `onto` succeed, in the order given? See `cherryPickSeries`.
+   * Cached by the target commit and the commit list; a result with a lot of conflicted text is not stored.
+   */
+  cherryPick(
+    onto: ResolvedSnapshot,
+    commits: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<GitCherryPick> {
+    return this.#cache.remember(
+      onto.cacheScope,
+      `cherry-pick|${onto.commit}|${commits.join(',')}`,
+      GitCherryPickSchema,
+      () =>
+        cherryPickSeries(
+          { git: this.#git, snapshots: this.#snapshots, scratchDir: this.#scratchDir },
+          onto,
+          commits,
+          signal,
+        ),
+      (result) =>
+        result.steps.reduce(
+          (total, step) =>
+            total + step.conflictedFiles.reduce((sum, file) => sum + (file.text?.length ?? 0), 0),
+          0,
+        ) <= MAX_CACHED_CONFLICT_CHARS,
+    );
+  }
+
+  /** The git version the server runs (asked once, then remembered). */
+  #version(): Promise<string> {
+    this.#gitVersion ??= this.#git.version();
+    return this.#gitVersion;
   }
 
   /** Checks that `filePath` is a file at this commit (a folder, or nothing, is not blame-able). */

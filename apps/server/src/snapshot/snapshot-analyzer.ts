@@ -1,4 +1,9 @@
-import { type DiffContentKind, type SnapshotFileDiff, SnapshotFileDiffSchema } from '@om/shared';
+import {
+  type DiffContentKind,
+  type DiffLine,
+  type SnapshotFileDiff,
+  SnapshotFileDiffSchema,
+} from '@om/shared';
 import { z } from 'zod';
 import {
   type AnalysisCache,
@@ -31,6 +36,21 @@ type TreeEntry = { oid: string; size: number };
 
 type SideContent =
   { kind: 'text'; oid: string; text: string } | { kind: 'binary' | 'too-large'; oid: string };
+
+/** One file at one commit: its blob, its size, and its text unless it is binary or too large. */
+export type FileContent = {
+  oid: string;
+  size: number;
+  content: 'text' | 'binary' | 'too-large';
+  text?: string | undefined;
+};
+
+const FileContentSchema = z.object({
+  oid: z.string(),
+  size: z.number().int().nonnegative(),
+  content: z.enum(['text', 'binary', 'too-large']),
+  text: z.string().optional(),
+}) satisfies z.ZodType<FileContent>;
 
 /**
  * Git-backed analysis of two snapshots: renames, one file's diff with the commits that
@@ -169,8 +189,37 @@ export class SnapshotAnalyzer {
       const parsed = await this.#hunks(left, right, l, r, isFullFile, opt);
       result.hunks = parsed.hunks;
       if (parsed.isTruncated) result.truncated = true;
+    } else if (kind === 'identical' && isFullFile && l?.kind === 'text') {
+      // Same content on both sides: the whole file is one context hunk, so both panes can show it.
+      const parsed = identicalHunks(l.text, this.#limits.maxDiffLines);
+      result.hunks = parsed.hunks;
+      if (parsed.isTruncated) result.truncated = true;
     }
     return result;
+  }
+
+  /**
+   * One file at one commit, read whole: its blob, its size and its text (or why there is none).
+   * Cached by blob id, since a blob never changes.
+   */
+  async readFile(
+    snapshot: ResolvedSnapshot,
+    filePath: string,
+    signal?: AbortSignal,
+  ): Promise<FileContent> {
+    const opt = signal ? { signal } : {};
+    const entry = await this.#entry(snapshot, filePath, opt);
+    return await this.#cache.remember(
+      snapshot.cacheScope,
+      `file|${entry.oid}`,
+      FileContentSchema,
+      async () => {
+        const side = await this.#contentOf(snapshot, entry, opt);
+        return side.kind === 'text'
+          ? { oid: entry.oid, size: entry.size, content: 'text', text: side.text }
+          : { oid: entry.oid, size: entry.size, content: side.kind };
+      },
+    );
   }
 
   async #readSide(
@@ -178,7 +227,14 @@ export class SnapshotAnalyzer {
     filePath: string,
     opt: { signal?: AbortSignal },
   ): Promise<SideContent> {
-    const entry = await this.#entry(snapshot, filePath, opt);
+    return await this.#contentOf(snapshot, await this.#entry(snapshot, filePath, opt), opt);
+  }
+
+  async #contentOf(
+    snapshot: ResolvedSnapshot,
+    entry: TreeEntry,
+    opt: { signal?: AbortSignal },
+  ): Promise<SideContent> {
     if (entry.size > this.#limits.maxTextBytes) {
       const head = await this.#blob(snapshot, entry.oid, opt);
       return {
@@ -248,6 +304,33 @@ export class SnapshotAnalyzer {
     if (r?.kind === 'text') return wholeFileHunk(r.text, 'right', max);
     return { hunks: [], isTruncated: false };
   }
+}
+
+/** An identical file as one context hunk: every line, at the same numbers on both sides. */
+function identicalHunks(text: string, maxLines: number): ParsedHunks {
+  const all = text === '' ? [] : text.replace(/\n$/, '').split('\n');
+  const shown = all.slice(0, maxLines);
+  if (shown.length === 0) return { hunks: [], isTruncated: false };
+  const count = shown.length;
+  const lines: DiffLine[] = shown.map((line, i) => ({
+    kind: 'context',
+    text: line,
+    leftLine: i + 1,
+    rightLine: i + 1,
+  }));
+  return {
+    hunks: [
+      {
+        header: `@@ -1,${count} +1,${count} @@`,
+        leftStart: 1,
+        leftCount: count,
+        rightStart: 1,
+        rightCount: count,
+        lines,
+      },
+    ],
+    isTruncated: all.length > maxLines,
+  };
 }
 
 function countLines(text: string): number {

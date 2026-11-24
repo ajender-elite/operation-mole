@@ -24,6 +24,8 @@ export type GitRunOptions = {
   okExitCodes?: readonly number[];
   /** Fail instead of buffering more than this much output. Default 64 MB. */
   maxBytes?: number;
+  /** Written to the command's standard input (e.g. the diffs `patch-id` reads). */
+  input?: string | Buffer;
 };
 
 /** A git command that exited with an unexpected code. */
@@ -281,12 +283,12 @@ export class GitService {
     args: readonly string[],
     options: GitRunOptions,
   ): Promise<{ stdout: Buffer; exitCode: number }> {
-    const { env = {}, signal, okExitCodes = [0], maxBytes = DEFAULT_MAX_BYTES } = options;
+    const { env = {}, signal, okExitCodes = [0], maxBytes = DEFAULT_MAX_BYTES, input } = options;
     return new Promise((resolve, reject) => {
       const child = spawn('git', [...ANALYSIS_ARGS, ...args], {
         cwd,
         env: { ...this.#env, GIT_OPTIONAL_LOCKS: '0', ...env },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         ...(signal ? { signal } : {}),
       });
@@ -306,6 +308,10 @@ export class GitService {
       child.stderr.on('data', (chunk: Buffer) => {
         if (stderr.length < 16_384) stderr += chunk.toString('utf8');
       });
+      // Nothing is written unless asked; stdin is closed either way, so git never waits for it.
+      // git may exit before reading all of its input; that is git's answer, not a stream error.
+      child.stdin.on('error', () => undefined);
+      child.stdin.end(input);
       child.on('error', reject);
       child.on('close', (code) => {
         if (signal?.aborted === true) return; // 'error' already rejected with an AbortError

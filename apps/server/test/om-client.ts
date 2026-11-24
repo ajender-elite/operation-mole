@@ -59,6 +59,15 @@ export class OmClient {
     return res.json<RepoInfo>();
   }
 
+  /** Adds another remote to a repo (and fetches it), as the Repos page does. */
+  async addRemote(repo: RepoInfo, name: string, url: string): Promise<void> {
+    await this.#post<unknown>(
+      `/api/users/${this.user}/sessions/${this.sessionId}/repos/${repo.id}/remotes`,
+      { name, url },
+      201,
+    );
+  }
+
   source(repo: RepoInfo, ref: string): GitSource {
     return { type: 'git', repoId: repo.id, branch: ref };
   }

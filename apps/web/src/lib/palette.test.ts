@@ -24,8 +24,23 @@ const lightBlock = /:root\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/.exec(css)?.[
 const dark = colorsIn(darkBlock);
 const light = colorsIn(lightBlock);
 
+/** The source-code colours (Shiki's token variables, see lib/highlight.ts). */
+const SYNTAX_TOKENS = [
+  'syntax-foreground',
+  'syntax-token-comment',
+  'syntax-token-constant',
+  'syntax-token-function',
+  'syntax-token-keyword',
+  'syntax-token-link',
+  'syntax-token-parameter',
+  'syntax-token-punctuation',
+  'syntax-token-string',
+  'syntax-token-string-expression',
+];
+
 /** Every token the components use; both themes must define all of them. */
 const REQUIRED = [
+  ...SYNTAX_TOKENS,
   'canvas',
   'surface',
   'ink',
@@ -96,6 +111,11 @@ const TEXT_PAIRS: Array<[string, string]> = [
   ['error', 'surface'],
   ['error', 'error-soft'],
   ['ok', 'surface'],
+  // Source code is read on the surface and the canvas: every syntax colour must be readable on both.
+  ...SYNTAX_TOKENS.flatMap((token): Array<[string, string]> => [
+    [token, 'surface'],
+    [token, 'canvas'],
+  ]),
 ];
 
 /** Status dots and other meaningful marks, against the surface they sit on. */

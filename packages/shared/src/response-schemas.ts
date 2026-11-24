@@ -4,10 +4,11 @@ import type {
   FolderComparison,
   RemoteInfo,
   ServerInfo,
-  ApplicabilityResult,
   CommitInfo,
   CommitPatch,
   GitLog,
+  GitTree,
+  GitTreeNode,
   CompareNode,
   EntryInfo,
   RepoInfo,
@@ -15,7 +16,15 @@ import type {
   SessionSummary,
   SnapshotFileDiff,
   SnapshotInfo,
-  UpstreamCommitList,
+  GitCherryPick,
+  CherryPickStep,
+  GitContains,
+  GitFile,
+  GitFiles,
+  GitGrep,
+  GitPatchIds,
+  GitRefEntry,
+  GitRefs,
 } from './api.ts';
 
 /*
@@ -138,7 +147,7 @@ const DiffHunkSchema = z.object({
   ),
 });
 
-/** `POST /api/snapshot/file-diff`. */
+/** `POST /api/git/diff`: one file's hunks between two git sides. */
 export const SnapshotFileDiffSchema = z.object({
   leftCommit: z.string(),
   rightCommit: z.string(),
@@ -155,51 +164,6 @@ export const SnapshotFileDiffSchema = z.object({
   attributionNote: z.string().exactOptional(),
   truncated: z.boolean().exactOptional(),
 }) satisfies z.ZodType<SnapshotFileDiff>;
-
-/** `POST /api/upstream/commits`. */
-export const UpstreamCommitListSchema = z.object({
-  upstream: SnapshotInfoSchema,
-  downstream: SnapshotInfoSchema,
-  upstreamLabel: z.string(),
-  downstreamLabel: z.string(),
-  commits: z.array(
-    CommitInfoSchema.extend({
-      parents: z.array(z.string()),
-      reachableFromDownstream: z.boolean(),
-    }),
-  ),
-  hasMore: z.boolean(),
-}) satisfies z.ZodType<UpstreamCommitList>;
-
-/** `POST /api/upstream/applicability`. */
-export const ApplicabilityResultSchema = z.object({
-  commit: z.string(),
-  downstreamCommit: z.string(),
-  status: z.enum(['clean', 'represented', 'conflict', 'unknown']),
-  reason: z.enum([
-    'reachable',
-    'equivalent-patch',
-    'no-effective-change',
-    'applies',
-    'conflict',
-    'error',
-  ]),
-  baseParent: z.string().exactOptional(),
-  isMerge: z.boolean(),
-  files: z.array(
-    z.object({
-      path: z.string(),
-      oldPath: z.string().exactOptional(),
-      outcome: z.enum(['applies', 'already-present', 'conflict']),
-    }),
-  ),
-  equivalentCommits: z.array(CommitInfoSchema),
-  conflicts: z.array(
-    z.object({ path: z.string(), startLine: z.number(), lines: z.array(z.string()) }),
-  ),
-  messages: z.array(z.string()),
-  detail: z.string().exactOptional(),
-}) satisfies z.ZodType<ApplicabilityResult>;
 
 /** `POST /api/upstream/patch`. */
 const GitRevisionSchema = z.object({
@@ -248,6 +212,19 @@ const GitTreeLeafSchema = z.object({
 
 export const GitResolveSchema = z.object({ revisions: z.array(GitRevisionSchema) });
 export const GitMergeBaseSchema = z.object({ commit: z.string().nullable() });
+
+export const GitTreeNodeSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  kind: z.enum(['directory', 'file', 'symlink', 'submodule']),
+  oid: z.string(),
+}) satisfies z.ZodType<GitTreeNode>;
+
+export const GitTreeSchema = z.object({
+  commit: z.string(),
+  path: z.string(),
+  entries: z.array(GitTreeNodeSchema),
+}) satisfies z.ZodType<GitTree>;
 export const GitAncestrySchema = z.object({
   results: z.array(z.object({ commit: z.string(), isAncestor: z.boolean().nullable() })),
 });
@@ -264,10 +241,14 @@ export const GitPatchEquivalentsSchema = z.object({
   exclude: GitRevisionSchema.optional(),
   commits: z.array(
     z.object({
-      commit: CommitInfoSchema.extend({ parents: z.array(z.string()) }),
+      commit: CommitInfoSchema.extend({
+        parents: z.array(z.string()),
+        body: z.string().exactOptional(),
+      }),
       mark: z.enum(['left', 'right', 'equivalent']),
     }),
   ),
+  truncated: z.boolean().exactOptional(),
 });
 
 export const GitMergeTreeSchema = z.object({
@@ -327,3 +308,102 @@ export const CommitPatchSchema = z.object({
   ),
   truncated: z.boolean(),
 }) satisfies z.ZodType<CommitPatch>;
+
+const GitRefEntrySchema = z.object({
+  remote: z.string(),
+  kind: z.enum(['branch', 'tag']),
+  name: z.string(),
+  commit: z.string(),
+  commitDate: z.string(),
+  subject: z.string(),
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+}) satisfies z.ZodType<GitRefEntry>;
+
+/** `POST /api/git/files`. */
+export const GitFilesSchema = z.object({
+  commit: z.string(),
+  paths: z.array(z.string()),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<GitFiles>;
+
+/** `POST /api/git/file`. */
+export const GitFileSchema = z.object({
+  commit: z.string(),
+  path: z.string(),
+  oid: z.string(),
+  size: z.number().int().nonnegative(),
+  content: z.enum(['text', 'binary', 'too-large']),
+  text: z.string().exactOptional(),
+}) satisfies z.ZodType<GitFile>;
+
+const GitGrepLineSchema = z.object({ line: z.number().int().positive(), text: z.string() });
+
+/** `POST /api/git/grep`. */
+export const GitGrepSchema = z.object({
+  commit: z.string(),
+  matches: z.array(
+    z.object({
+      path: z.string(),
+      line: z.number().int().positive(),
+      column: z.number().int().positive(),
+      text: z.string(),
+      before: z.array(GitGrepLineSchema),
+      after: z.array(GitGrepLineSchema),
+    }),
+  ),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<GitGrep>;
+
+/** `POST /api/git/refs`. */
+export const GitRefsSchema = z.object({
+  refs: z.array(GitRefEntrySchema),
+  compareTo: GitRevisionSchema.exactOptional(),
+}) satisfies z.ZodType<GitRefs>;
+
+/** `POST /api/git/contains`. */
+export const GitContainsSchema = z.object({
+  commit: z.string(),
+  refs: z.array(
+    z.object({ remote: z.string(), kind: z.enum(['branch', 'tag']), name: z.string() }),
+  ),
+}) satisfies z.ZodType<GitContains>;
+
+/** `POST /api/git/patch-ids`. */
+export const GitPatchIdsSchema = z.object({
+  results: z.array(z.object({ commit: z.string(), patchId: z.string().nullable() })),
+}) satisfies z.ZodType<GitPatchIds>;
+
+const CherryPickStepSchema = z.object({
+  index: z.number().int().nonnegative(),
+  commit: CommitInfoSchema.extend({ parents: z.array(z.string()) }),
+  status: z.enum(['applies', 'no-change', 'in-history', 'conflict', 'not-run']),
+  files: z.array(z.string()),
+  conflictedPaths: z.array(z.string()),
+  conflictedFiles: z.array(z.object({ path: z.string(), text: z.string().nullable() })),
+  messages: z.array(z.string()),
+}) satisfies z.ZodType<CherryPickStep>;
+
+/** `POST /api/git/cherry-pick`. */
+export const GitCherryPickSchema = z.object({
+  onto: GitRevisionSchema,
+  outcome: z.enum(['applies', 'conflict', 'invalid']),
+  stoppedAt: z.number().int().nonnegative().exactOptional(),
+  issues: z.array(
+    z.object({
+      index: z.number().int().nonnegative(),
+      commit: z.string(),
+      problem: z.enum(['not-found', 'not-a-commit', 'duplicate', 'merge', 'root']),
+      message: z.string(),
+    }),
+  ),
+  warnings: z.array(
+    z.object({
+      index: z.number().int().nonnegative(),
+      kind: z.literal('parent-after-child'),
+      message: z.string(),
+    }),
+  ),
+  steps: z.array(CherryPickStepSchema),
+  changedPaths: z.array(z.string()),
+}) satisfies z.ZodType<GitCherryPick>;

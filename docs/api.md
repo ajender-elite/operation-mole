@@ -123,9 +123,9 @@ Small, git-like endpoints that the frontend composes into its views. They take a
 
 ### `POST /api/git/log`
 
-`git log source ^exclude`: the commits reachable from `source` and not from `exclude`, newest first, one page at a time. Body (besides `user` and `sessionId`): `source`, optional `exclude`, optional `paths` (literal paths), `firstParent`, `since` (`YYYY-MM-DD`), `limit` (1–200, default 50), `skip`, `withBody` (the full message), `withStats` (changed files with additions, deletions, renames and binary marks).
+`git log source ^exclude`: the commits reachable from `source` and not from `exclude`, newest first, one page at a time. Body (besides `user` and `sessionId`): `source`, optional `exclude`, optional `paths` (literal paths), `firstParent`, `since` (`YYYY-MM-DD`), `limit` (1–200, default 50), `skip`, `withBody` (the full message), `withStats` (changed files with additions, deletions, renames and binary marks), `grep` (only commits whose message contains this text, fixed and case-insensitive), `author` (only commits whose author name or email contains it, likewise), `topoOrder` (parents before children), and `follow` (one file through its renames; needs exactly one path, else **400**).
 
-Response: `{ include, exclude?, commits, hasMore, total }`. `total` counts the whole range; `hasMore` says whether another page exists. The excluded commit itself is not in `commits`; a caller that wants a range to end at it shows it as the last entry.
+Response: `{ include, exclude?, commits, hasMore, total }`. `total` counts the whole range (with `follow`, the commits that touched the file through its renames); `hasMore` says whether another page exists. The excluded commit itself is not in `commits`; a caller that wants a range to end at it shows it as the last entry.
 
 ### `POST /api/git/show`
 
@@ -157,11 +157,54 @@ Whether `theirs` merges cleanly into `ours`, computed in a scratch object store 
 
 ### `POST /api/git/patch-equivalents`
 
-The commits on each side of `left...right` (after `exclude`, when given), newest first, each marked `left` or `right` by side. A commit that makes the same change as a commit on the other side (`git log --cherry-mark`, the same patch-id) is marked `equivalent`. Merge commits are left out. Body: `left`, `right`, and optional `exclude`. Response: `{ left, right, exclude?, commits }`, where each of `commits` is `{ commit, mark }`, and `commit` has the shape of a `log` commit.
+The commits on each side of `left...right` (after `exclude`, when given), newest first, each marked `left` or `right` by side. A commit that makes the same change as a commit on the other side (`git log --cherry-mark`, the same patch-id) is marked `equivalent`. Merge commits are left out. Body: `left`, `right`, optional `exclude`, `withBody` (include each commit's message, for trailers such as `(cherry picked from …)`), and `limit` (at most this many commits, default 500). Response: `{ left, right, exclude?, commits, truncated? }`, where each of `commits` is `{ commit, mark }`, and `commit` has the shape of a `log` commit (with `body` when asked). `truncated` is true when more commits exist than `limit` allows.
 
 ### `POST /api/git/compare-trees`
 
 Every file of two trees with its status, compared by object id (nothing is checked out). Body: `left`, `right`, and optional `paths` (only those paths). Response: `{ left, right, entries, renames, folder }`. `folder` is the tree Folder Compare shows: `{ leftLabel, rightLabel, root, summary, leftSnapshot, rightSnapshot }`, where `root` is a `CompareNode` tree (folders first, then files, each in natural order), `summary` counts the files by status, and each snapshot is the exact commit a side resolved to. Each entry has `path`, `status` (`identical`, `modified`, `only-left` or `only-right`), and each side's `left`/`right` leaf (`kind`: `file`, `symlink` or `submodule`; `oid`; `size`). Folders are not listed; they follow from the files under them. `renames` lists the files git detects as moved, with their similarity in percent.
+
+### `POST /api/git/tree`
+
+One folder of a commit, one level deep (`git ls-tree`): its folders and files, folders first, each group in Folder Compare's order. Body: `source` and optional `path` (the root when absent). Response: `{ commit, path, entries }`, where each entry is `{ name, path, kind, oid }` (`kind`: `directory`, `file`, `symlink` or `submodule`). Reads object ids only. Cached by commit and folder. A file or a missing folder answers **400** or **404**.
+
+### `POST /api/git/files`
+
+Every file path of a commit, sorted (`ls-tree -r`, for go-to-file). Body: `source`. Response: `{ commit, paths, truncated }`. No blob is read. More than 200,000 paths are cut, with `truncated` set. Cached by commit.
+
+### `POST /api/git/file`
+
+One file of a commit, whole. Body: `source` and `path`. Response: `{ commit, path, oid, size, content, text? }`, where `content` is `text` (with `text`), `binary` or `too-large` (over 5 MB, with no text). Cached by blob id. A folder answers **400**; a missing path **404**.
+
+### `POST /api/git/grep`
+
+Lines of a commit that match a query (`git grep -n --column -I`), grouped by the caller. Body: `source`, `query`, optional `regex` (POSIX extended, not PCRE), `ignoreCase`, `paths` (up to 100), and `context` (0 to 3 lines). Response: `{ commit, matches, truncated }`, where each match is `{ path, line, column, text, before, after }`. At most 1,000 matches are returned, with `truncated` set when there are more. Binary files are skipped. Cached by commit and query.
+
+### `POST /api/git/refs`
+
+Every branch and tag of every remote of a repo, sorted by remote, then branches before tags, then name. Body: `repoId` and optional `compareTo` (a `source`). Response: `{ refs, compareTo? }`, where each ref is `{ remote, kind, name, commit, commitDate, subject, ahead?, behind? }`. With `compareTo`, `ahead` and `behind` count commits against that commit, in one git call; that needs git 2.41 or later, and older git gives no counts. Not cached: refs move on every fetch.
+
+### `POST /api/git/contains`
+
+Every branch and tag of any remote whose history includes the commit (`for-each-ref --contains`). Body: `source`. Response: `{ commit, refs: [{ remote, kind, name }] }`. Not cached.
+
+### `POST /api/git/patch-ids`
+
+The patch id of each commit (`git patch-id --stable`): equal ids mean the same change. Body: `source` and `commits` (full SHAs, up to 200). Response: `{ results: [{ commit, patchId }] }`, where `patchId` is null for a merge or an empty commit. A commit the repo does not have answers **404**. Cached by the list of commits.
+
+### `POST /api/git/cherry-pick`
+
+Would `git cherry-pick <commits…>` onto a branch succeed, applied in the order given, each on the result of the one before? A dry run: the picks are merged in a scratch object store, removed afterwards, so no ref, index or worktree is touched. Body: `onto` (a `source`, on any of the repo's remotes) and `commits` (full SHAs, 1 to 100).
+
+The request is checked first. A commit that is missing, is not a commit, is listed twice, is a merge, or is a root commit refuses the whole request: `outcome: 'invalid'`, every problem listed in `issues` by position, and no step runs. A commit listed before its own parent gets a `warnings` entry, which does not block.
+
+Otherwise each commit is merged onto the result so far, with its own parent as the base, as `git cherry-pick` does:
+
+- `in-history`: the commit is already in the branch's history; skipped, and the run goes on.
+- `no-change`: the commit applies, but the result is unchanged (its change is already there); the run goes on.
+- `applies`: the commit applies and changes the result.
+- `conflict`: git cannot merge it. The run stops here: `outcome: 'conflict'` and `stoppedAt` (the position), with the conflicted paths and up to 10 files' merged text (with markers). Later steps are `not-run`.
+
+Response: `{ onto, outcome, stoppedAt?, issues, warnings, steps, changedPaths }`. `changedPaths` lists what the picks change on `onto`, up to the stop. Each step is `{ index, commit, status, files, conflictedPaths, conflictedFiles, messages }`. The result is cached by `onto`'s commit and the list of commits, unless it holds more than 1 MB of conflicted text.
 
 ## Removed
 

@@ -7,15 +7,33 @@ export type WorkspaceTab = {
 };
 
 /** What a tab shows. */
-export type TabKind = 'home' | 'folders' | 'file' | 'upstream' | 'commit' | 'commits' | 'log';
+export type TabKind =
+  | 'home'
+  | 'folders'
+  | 'file'
+  | 'upstream'
+  | 'commit'
+  | 'commits'
+  | 'code'
+  | 'search'
+  | 'branches'
+  | 'series'
+  | 'between';
 
 const KINDS: ReadonlyMap<string, TabKind> = new Map([
   ['folders', 'folders'],
   ['file', 'file'],
   ['upstream', 'upstream'],
   ['commit', 'commit'],
+  // The Commits tab; the old History, Range Log and Commit List URLs are the same tab.
   ['commits', 'commits'],
-  ['log', 'log'],
+  ['history', 'commits'],
+  ['log', 'commits'],
+  ['code', 'code'],
+  ['search', 'search'],
+  ['branches', 'branches'],
+  ['series', 'series'],
+  ['between', 'between'],
 ]);
 
 function split(url: string): { pathname: string; params: URLSearchParams } {
@@ -34,7 +52,7 @@ export function tabKind(url: string, base: string): TabKind | undefined {
   return KINDS.get(rest.slice(base.length + 1));
 }
 
-const SOURCES = ['leftRepo', 'leftBranch', 'rightRepo', 'rightBranch'];
+const SOURCES = ['leftRepo', 'leftBranch', 'leftRemote', 'rightRepo', 'rightBranch', 'rightRemote'];
 const FILE = ['leftRepo', 'rightRepo', 'leftCommit', 'rightCommit', 'leftPath', 'rightPath'];
 /** The parameters that make a tab the same context, per kind (the rest is where the user is in it). */
 const IDENTITY: Record<Exclude<TabKind, 'home'>, string[]> = {
@@ -42,8 +60,16 @@ const IDENTITY: Record<Exclude<TabKind, 'home'>, string[]> = {
   upstream: SOURCES,
   file: FILE,
   commit: ['repo', 'commit'],
-  commits: [...FILE, 'side'],
-  log: ['repo', 'top', 'bottom'],
+  // One Commits tab per ref and path (and range): moving the selected commit keeps it.
+  commits: ['repo', 'remote', 'ref', 'path', 'notIn', 'notInRemote'],
+  // One Code tab per ref: moving between its folders and files keeps it (the path is where the user is).
+  code: ['repo', 'remote', 'ref'],
+  // One History tab per path of a ref: each folder you open its commits in is its own tab.
+  search: ['repo', 'remote', 'ref'],
+  branches: ['repo'],
+  series: ['repo'],
+  // One Between tab per pair of branches: the two sides are the comparison, not where the user is in it.
+  between: ['repo', 'left', 'right'],
 };
 
 function key(params: URLSearchParams, names: string[]): string | undefined {

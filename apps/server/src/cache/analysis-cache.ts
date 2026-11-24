@@ -5,7 +5,7 @@ import { LruCache } from './lru-cache.ts';
  * Bump when a cached result's meaning or shape changes: entries written under another version are
  * never read, and they are the first to go when storage needs room.
  */
-export const CACHE_VERSION = 1;
+export const CACHE_VERSION = 2;
 
 /** Entries kept in memory before the least recently used are dropped (storage keeps the rest). */
 const DEFAULT_MEMORY_ENTRIES = 5000;

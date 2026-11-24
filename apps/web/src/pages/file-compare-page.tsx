@@ -33,6 +33,7 @@ import {
 import { ancestryQuery, blameMarks, blameQuery, sharedWith, type BlameMark } from '../lib/blame.ts';
 import { folderCompareQuery } from '../lib/folder-compare.ts';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
+import { useDiffHighlight } from '../lib/diff-highlight.ts';
 import { fileDiffQuery, useAnalyzedDiffs, type SnapshotPair } from '../lib/snapshot-diff.ts';
 import { sourceFromParams, sourceLabel } from '../lib/sources.ts';
 import { commitsUrl, commitUrl, fileUrl, foldersUrl } from '../lib/urls.ts';
@@ -108,6 +109,20 @@ function blamedSides(param: string | null): Set<'left' | 'right'> {
   return sides;
 }
 
+/**
+ * The lines (by number) whose last change is a different commit in the two histories. Only lines both blames
+ * name count; identical content has the same line numbers on both sides.
+ */
+function differingLinesOf(left: GitBlame, right: GitBlame): Set<number> {
+  const rightByLine = new Map(right.lines.map((line) => [line.line, line.commit]));
+  const differing = new Set<number>();
+  for (const line of left.lines) {
+    const other = rightByLine.get(line.line);
+    if (other !== undefined && other !== line.commit) differing.add(line.line);
+  }
+  return differing;
+}
+
 /** The distinct commits a blame names, in the order it gives them (at most 200, the ancestry limit). */
 function commitsOf(blame: GitBlame | undefined): string[] {
   if (blame === undefined) return [];
@@ -167,31 +182,56 @@ function FileCompare({ context }: { context: FileContext }) {
     enabled: isExplaining,
   });
   const diff = (isExplaining ? explained.data : undefined) ?? plain.data;
+  // An identical file still shows both panes with its whole content. The full-file diff (one context hunk)
+  // is asked for only once the plain diff says the content is the same, so changed files stay small.
+  const identicalFull = useQuery({
+    ...fileDiffQuery(pair, target, true, false),
+    enabled: plain.data?.content === 'identical' && !isFullFile,
+  });
+  const fullIdentical = isFullFile ? plain.data : identicalFull.data;
+  const identicalPanes =
+    diff?.content === 'identical' && (fullIdentical?.hunks.length ?? 0) > 0
+      ? fullIdentical
+      : undefined;
   const analyzed = useAnalyzedDiffs(pair);
+  // The lines of the diff, coloured by the language of the file (plain text when the file has none).
+  const shownDiff = identicalPanes ?? diff;
+  const highlight = useDiffHighlight(
+    shownDiff?.hunks ?? [],
+    shownDiff?.rightPath ?? shownDiff?.leftPath ?? '',
+  );
 
   // Blame of each side asked for: the last change to every line in that side's own history. A
   // commit the other side also has is shared (dashed), so it is marked as such: one ancestry check each.
   const blamed = blamedSides(params.get('blame'));
   const leftSource: GitSource = { ...left, branch: leftCommit };
   const rightSource: GitSource = { ...right, branch: rightCommit };
+  // Identical content still asks both sides' blame, so the lines whose last change differs can be marked.
+  const isIdentical = identicalPanes !== undefined;
   const blameLeft = useQuery({
     ...blameQuery(user, sessionId, leftSource, target.leftPath ?? ''),
-    enabled: blamed.has('left') && target.leftPath !== undefined,
+    enabled: (blamed.has('left') || isIdentical) && target.leftPath !== undefined,
   });
   const blameRight = useQuery({
     ...blameQuery(user, sessionId, rightSource, target.rightPath ?? ''),
-    enabled: blamed.has('right') && target.rightPath !== undefined,
+    enabled: (blamed.has('right') || isIdentical) && target.rightPath !== undefined,
   });
   const leftCommits = commitsOf(blameLeft.data);
   const rightCommits = commitsOf(blameRight.data);
+  // Shared (dashed) commits are only needed where a side's blame is shown.
   const leftShared = useQuery({
     ...ancestryQuery(user, sessionId, rightSource, leftCommits),
-    enabled: leftCommits.length > 0,
+    enabled: leftCommits.length > 0 && blamed.has('left'),
   });
   const rightShared = useQuery({
     ...ancestryQuery(user, sessionId, leftSource, rightCommits),
-    enabled: rightCommits.length > 0,
+    enabled: rightCommits.length > 0 && blamed.has('right'),
   });
+  // Lines of identical content whose last change is a different commit on each side.
+  const differingLines =
+    isIdentical && blameLeft.data !== undefined && blameRight.data !== undefined
+      ? differingLinesOf(blameLeft.data, blameRight.data)
+      : undefined;
   // A blamed side keeps its column while its blame loads, so the layout does not jump.
   const blame =
     blamed.size === 0
@@ -387,15 +427,16 @@ function FileCompare({ context }: { context: FileContext }) {
                     title={`Commits that ${side === 'left' ? 'Left' : 'Right'} has and the other side does not, in a new tab`}
                     className="touch-target flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-xs hover:bg-hover"
                     onClick={() => {
-                      workspace.open(
-                        commitsUrl(
-                          user,
-                          sessionId,
-                          { left, right, leftCommit, rightCommit, target },
-                          side,
-                          { hunk: hunkParam ?? undefined },
-                        ),
-                      );
+                      // This side's commit, without what the other side's commit already has.
+                      const mine =
+                        side === 'left'
+                          ? { ...left, branch: leftCommit }
+                          : { ...right, branch: rightCommit };
+                      const other =
+                        side === 'left'
+                          ? { ...right, branch: rightCommit }
+                          : { ...left, branch: leftCommit };
+                      workspace.open(commitsUrl(user, sessionId, mine, { notIn: other }));
                     }}
                   >
                     <GitCommitHorizontal className="size-3.5" aria-hidden />
@@ -459,14 +500,16 @@ function FileCompare({ context }: { context: FileContext }) {
             <p className="m-auto flex items-center gap-2 p-8 text-muted">
               <LoaderCircle className="size-4 animate-spin" aria-hidden /> Diffing…
             </p>
-          ) : diff.content === 'text' ? (
+          ) : diff.content === 'text' || identicalPanes !== undefined ? (
             <SnapshotDiffView
-              diff={diff}
+              diff={identicalPanes ?? diff}
+              differingLines={identicalPanes === undefined ? undefined : differingLines}
               leftLabel={leftLabel}
               rightLabel={rightLabel}
               focusedHunk={focusedHunk}
               focusedLine={focusedLine}
               highlightCommit={commitSha}
+              tokens={highlight.data ?? undefined}
               blame={blame}
               layout={layout}
               onLayoutChange={(next) => {

@@ -34,9 +34,6 @@ beforeEach(() => {
         folder: dirResult,
       }),
     ),
-    http.post('*/api/upstream/commits', () =>
-      HttpResponse.json({ message: 'not needed here' }, { status: 400 }),
-    ),
     http.post('*/api/users/:user/sessions/:sessionId/repos/:repoId/fetch', () => {
       repos = repos.map((r) => ({
         ...r,
@@ -82,8 +79,10 @@ describe('SessionOverviewPage', () => {
     const user = userEvent.setup();
     const app = renderApp(OVERVIEW);
     const compare = await screen.findByRole('region', { name: 'Compare' });
-    // Upstream analysis is offered only once there is something to analyze.
-    expect(within(compare).queryByRole('button', { name: /upstream/i })).not.toBeInTheDocument();
+    // Commits between is offered only once there is something to compare.
+    expect(
+      within(compare).queryByRole('button', { name: /commits between/i }),
+    ).not.toBeInTheDocument();
     for (const [side, branch] of [
       ['Left', 'main'],
       ['Right', 'dev'],
@@ -91,7 +90,7 @@ describe('SessionOverviewPage', () => {
       await user.selectOptions(within(compare).getByLabelText(`${side} repository`), 'r1');
       await user.selectOptions(within(compare).getByLabelText(`${side} branch`), branch);
     }
-    expect(within(compare).getByRole('button', { name: /check upstream commits/i })).toBeEnabled();
+    expect(within(compare).getByRole('button', { name: /commits between/i })).toBeEnabled();
     await user.click(within(compare).getByRole('button', { name: /compare folders/i }));
     await waitFor(() => {
       expect(app.location().pathname).toBe(`${OVERVIEW}/folders`);
@@ -104,7 +103,7 @@ describe('SessionOverviewPage', () => {
     );
   });
 
-  it('uses the same choice for upstream analysis', async () => {
+  it('uses the same choice for commits between', async () => {
     const user = userEvent.setup();
     const app = renderApp(OVERVIEW);
     const compare = await screen.findByRole('region', { name: 'Compare' });
@@ -115,11 +114,12 @@ describe('SessionOverviewPage', () => {
       await user.selectOptions(within(compare).getByLabelText(`${side} repository`), 'r1');
       await user.selectOptions(within(compare).getByLabelText(`${side} branch`), branch);
     }
-    await user.click(within(compare).getByRole('button', { name: /check upstream commits/i }));
+    await user.click(within(compare).getByRole('button', { name: /commits between/i }));
     await waitFor(() => {
-      expect(app.location().pathname).toBe(`${OVERVIEW}/upstream`);
+      expect(app.location().pathname).toBe(`${OVERVIEW}/between`);
     });
-    expect(app.search().get('leftBranch')).toBe('main');
+    expect(app.search().get('left')).toBe('origin/main');
+    expect(app.search().get('right')).toBe('origin/dev');
   });
 
   it('lists the session’s repos with their branches', async () => {

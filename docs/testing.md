@@ -91,7 +91,7 @@ Prefer keeping a test running everywhere and only adding the platform-dependent 
 - **`renderApp(url)`** (`src/test/render.tsx`) renders the **real routes** in a memory router with a fresh query client. It returns `location()` and `search()` so tests can check the URL.
 - **MSW** (`src/test/server.ts`, `src/test/setup.ts`) mocks the API. Unhandled requests **fail** the test (`onUnhandledFrame: 'error'`), so every request the page makes needs a handler, including the session `GET` the header makes. `src/test/handlers.ts` has shared fixtures (`sessionSummary`, `repoInfo`, `sessionDetailHandler`).
 - **Setup:** `matchMedia` is stubbed (the app ignores it: the theme is dark unless the user chose light), and `localStorage` and `data-theme` are reset before each test.
-- **Git investigation flows:** `folder-attribution.test.tsx` (focus → attribution, file/hunk/line, commit → differences, URL restore, large folders) and `upstream-page.test.tsx` (window, independent evaluation, evidence) mock the git primitives; `lib/attribution.test.ts` covers the aggregation rules.
+- **Git investigation flows:** `folder-attribution.test.tsx` (focus → attribution, file/hunk/line, commit → differences, URL restore, large folders) and `between-page.test.tsx` (marks, filter, bulk add to the series) mock the git primitives; `series-page.test.tsx` and `commit-branches.test.tsx` cover the series check; `lib/attribution.test.ts` covers the aggregation rules.
 - **Queries:** prefer role, label and text queries (`getByRole('treeitem', { name })`, `getByLabelText('Left branch')`). They double as accessibility checks.
 
 ## In the browser

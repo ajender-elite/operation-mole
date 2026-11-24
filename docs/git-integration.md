@@ -34,17 +34,17 @@ Diffs, blame, history and merge-tree run through `GitService.run`: git spawned d
 | `-c gc.auto=0 -c maintenance.auto=false`                                                                                   | Lazy fetches add packs; automatic repacking must not run under concurrent readers |
 | `GIT_OPTIONAL_LOCKS=0`                                                                                                     | Reads take no locks                                                               |
 
-| Question            | Command(s)                                                                                                          |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Snapshot identity   | `rev-parse --verify refs/heads/<x>^{commit}`, then `refs/tags/<x>`, then `<sha>` (`resolveCommit`)                  |
-| Renames             | `diff --name-status -z -M --diff-filter=R <left> <right>`                                                           |
-| One file's diff     | `ls-tree -z -l`, `cat-file blob`, `diff -U<n> --no-ext-diff --no-textconv <blob> <blob>`                            |
-| Current attribution | `blame --porcelain -L a,b … <commit> -- <path>` on each line's own side                                             |
-| Reachability        | `merge-base --is-ancestor <commit> <tip>` (cached)                                                                  |
-| Upstream window     | `log -z --format=… --max-count=N [--since] [--first-parent] <up> [^<down>]`                                         |
-| Applicability       | `merge-tree --write-tree -z --name-only --merge-base=<parent> <down> <commit>`, then `diff-tree` against downstream |
-| Patch equivalence   | `log --left-right --cherry-mark --no-merges <down>...<commit> ^<parent>`                                            |
-| Patch               | `diff-tree -r -M -p <parent> <commit>` and `--name-status -z` for the file list                                     |
+| Question                       | Command(s)                                                                                                                                                           |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Snapshot identity              | `rev-parse --verify refs/heads/<x>^{commit}`, then `refs/tags/<x>`, then `<sha>` (`resolveCommit`)                                                                   |
+| Renames                        | `diff --name-status -z -M --diff-filter=R <left> <right>`                                                                                                            |
+| One file's diff                | `ls-tree -z -l`, `cat-file blob`, `diff -U<n> --no-ext-diff --no-textconv <blob> <blob>`                                                                             |
+| Current attribution            | `blame --porcelain -L a,b … <commit> -- <path>` on each line's own side                                                                                              |
+| Reachability                   | `merge-base --is-ancestor <commit> <tip>` (cached)                                                                                                                   |
+| Between (commits on each side) | `log --cherry-mark` / `patch-equivalents`: `log -z --left-right --cherry-mark --no-merges --max-count=N <left>...<right>`                                            |
+| Series check                   | `merge-tree --write-tree -z --name-only --merge-base=<parent> <tree-or-commit> <commit>` per pick, in a scratch object store, then `diff-tree` for the changed paths |
+| Patch equivalence              | `log --left-right --cherry-mark --no-merges <down>...<commit> ^<parent>`                                                                                             |
+| Patch                          | `diff-tree -r -M -p <parent> <commit>` and `--name-status -z` for the file list                                                                                      |
 
 **Object views.** The two snapshots may live in different clones (different remotes). An object view runs git in one clone with the other clone's `objects` folder in `GIT_ALTERNATE_OBJECT_DIRECTORIES`, so one process sees both. Nothing is fetched between clones and no clone's config changes.
 

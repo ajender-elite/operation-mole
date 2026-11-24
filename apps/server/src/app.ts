@@ -19,6 +19,22 @@ import {
   GitLogRequestSchema,
   type GitMergeBase,
   GitMergeBaseRequestSchema,
+  type GitTree,
+  GitTreeRequestSchema,
+  type GitFiles,
+  GitFilesRequestSchema,
+  type GitFile,
+  GitFileRequestSchema,
+  type GitGrep,
+  GitGrepRequestSchema,
+  type GitRefs,
+  GitRefsRequestSchema,
+  type GitContains,
+  GitContainsRequestSchema,
+  type GitPatchIds,
+  GitPatchIdsRequestSchema,
+  type GitCherryPick,
+  GitCherryPickRequestSchema,
   type GitMergeTree,
   type GitPatchEquivalents,
   GitPatchEquivalentsRequestSchema,
@@ -133,7 +149,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     cache,
   );
   const patches = new CommitPatchReader(git);
-  const primitives = new GitPrimitives(git, snapshots, { scratchDir });
+  const primitives = new GitPrimitives(git, snapshots, { scratchDir, cache });
   // Folders that no row names (left by a crash or an interrupted delete) go before anything is served.
   repos.sweepOrphans();
   app.addHook('onClose', () => {
@@ -299,6 +315,68 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     return { commit: await primitives.mergeBase(a, b, abortOnDisconnect(reply)) };
   });
 
+  app.post('/api/git/tree', async (request, reply): Promise<GitTree> => {
+    const body = parse(GitTreeRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await primitives.tree(snapshot, body.path ?? '', abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/files', async (request, reply): Promise<GitFiles> => {
+    const body = parse(GitFilesRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await primitives.files(snapshot, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/file', async (request, reply): Promise<GitFile> => {
+    const body = parse(GitFileRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await primitives.file(snapshot, body.path, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/grep', async (request, reply): Promise<GitGrep> => {
+    const body = parse(GitGrepRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await primitives.grep(
+      snapshot,
+      {
+        query: body.query,
+        regex: body.regex,
+        ignoreCase: body.ignoreCase,
+        paths: body.paths,
+        context: body.context,
+      },
+      abortOnDisconnect(reply),
+    );
+  });
+
+  app.post('/api/git/refs', async (request, reply): Promise<GitRefs> => {
+    const body = parse(GitRefsRequestSchema, request.body);
+    const location = repos.repoLocation(body.user, body.sessionId, body.repoId);
+    const compareTo =
+      body.compareTo === undefined
+        ? undefined
+        : await repos.resolveSnapshot(body.compareTo, body.user, body.sessionId);
+    return await primitives.refs(location, compareTo, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/contains', async (request, reply): Promise<GitContains> => {
+    const body = parse(GitContainsRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await primitives.contains(snapshot, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/patch-ids', async (request, reply): Promise<GitPatchIds> => {
+    const body = parse(GitPatchIdsRequestSchema, request.body);
+    const snapshot = await repos.resolveSnapshot(body.source, body.user, body.sessionId);
+    return await primitives.patchIds(snapshot, body.commits, abortOnDisconnect(reply));
+  });
+
+  app.post('/api/git/cherry-pick', async (request, reply): Promise<GitCherryPick> => {
+    const body = parse(GitCherryPickRequestSchema, request.body);
+    const onto = await repos.resolveSnapshot(body.onto, body.user, body.sessionId);
+    return await primitives.cherryPick(onto, body.commits, abortOnDisconnect(reply));
+  });
+
   app.post('/api/git/ancestry', async (request, reply): Promise<GitAncestry> => {
     const body = parse(GitAncestryRequestSchema, request.body);
     const tip = await repos.resolveSnapshot(body.tip, body.user, body.sessionId);
@@ -352,17 +430,19 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       body.exclude === undefined
         ? undefined
         : await repos.resolveSnapshot(body.exclude, body.user, body.sessionId);
-    const commits = await primitives.patchEquivalents(
+    const comparison = await primitives.patchEquivalents(
       left,
       right,
       exclude,
+      { withBody: body.withBody, limit: body.limit },
       abortOnDisconnect(reply),
     );
     return {
       left: revisionOf(left),
       right: revisionOf(right),
       ...(exclude === undefined ? {} : { exclude: revisionOf(exclude) }),
-      commits,
+      commits: comparison.commits,
+      ...(comparison.truncated ? { truncated: true } : {}),
     };
   });
 

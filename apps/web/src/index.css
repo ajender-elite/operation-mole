@@ -58,6 +58,18 @@
   --color-error: #e08f8a;
   --color-error-soft: #3d2424;
   --color-error-dot: #ec8d86;
+
+  /* Source code (lib/highlight.ts): Shiki's token colours are these variables. */
+  --color-syntax-foreground: #cfcac1;
+  --color-syntax-token-comment: #8f9aa6;
+  --color-syntax-token-constant: #d19a66;
+  --color-syntax-token-function: #8fa8d6;
+  --color-syntax-token-keyword: #c49bd6;
+  --color-syntax-token-link: #8fa8d6;
+  --color-syntax-token-parameter: #e5c07b;
+  --color-syntax-token-punctuation: #a29e95;
+  --color-syntax-token-string: #9cc59a;
+  --color-syntax-token-string-expression: #9cc59a;
 }
 
 /* Dark is the default; the explicit light choice in html[data-theme] wins. */
@@ -75,6 +87,16 @@
   color-scheme: light;
   --color-canvas: #f6f3ec;
   --color-surface: #fbf9f4;
+  --color-syntax-foreground: #2b2a27;
+  --color-syntax-token-comment: #6b675f;
+  --color-syntax-token-constant: #9a4f00;
+  --color-syntax-token-function: #3f5f9a;
+  --color-syntax-token-keyword: #7a3e9d;
+  --color-syntax-token-link: #3f5f9a;
+  --color-syntax-token-parameter: #8a5a00;
+  --color-syntax-token-punctuation: #4d4a44;
+  --color-syntax-token-string: #2f6b3a;
+  --color-syntax-token-string-expression: #2f6b3a;
   --color-ink: #2b2a27;
   --color-muted: #6b675f;
   --color-line: #e3ddd0;

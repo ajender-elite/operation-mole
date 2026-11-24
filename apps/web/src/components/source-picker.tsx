@@ -1,4 +1,4 @@
-import type { RepoInfo } from '@om/shared';
+import { DEFAULT_REMOTE, type RepoInfo } from '@om/shared';
 import clsx from 'clsx';
 import { Download, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useId, useState, type JSX } from 'react';
@@ -43,6 +43,11 @@ export function SourcePicker({
   const [url, setUrl] = useState('');
 
   const repo = repos.find((r) => r.id === value.repoId);
+  // The branch is on one remote (origin unless the side names another); its branches are the choices.
+  const remoteName = value.remote ?? DEFAULT_REMOTE;
+  const branches =
+    repo?.remotes.find((r) => r.name === remoteName)?.branches ?? repo?.branches ?? [];
+  const hasRemotes = (repo?.remotes.length ?? 0) > 1;
   const shouldShowUrl = isAdding || repos.length === 0;
 
   const cloneUrl = () => {
@@ -135,6 +140,28 @@ export function SourcePicker({
         </div>
       )}
 
+      {repo && !isAdding && hasRemotes && (
+        <div>
+          <label htmlFor={`${id}-remote`} className={small}>
+            {side} remote
+          </label>
+          <select
+            id={`${id}-remote`}
+            className={field}
+            value={remoteName}
+            onChange={(e) => {
+              onChange({ type: 'git', repoId: repo.id, remote: e.target.value, branch: '' });
+            }}
+          >
+            {repo.remotes.map((r) => (
+              <option key={r.name} value={r.name}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {repo && !isAdding && (
         <div>
           <label htmlFor={`${id}-branch`} className={small}>
@@ -146,16 +173,21 @@ export function SourcePicker({
               className={clsx(field, 'font-mono')}
               value={value.branch}
               onChange={(e) => {
-                onChange({ type: 'git', repoId: repo.id, branch: e.target.value });
+                onChange({
+                  type: 'git',
+                  repoId: repo.id,
+                  remote: value.remote,
+                  branch: e.target.value,
+                });
               }}
             >
               <option value="" disabled>
                 Choose a branch…
               </option>
-              {value.branch !== '' && !repo.branches.includes(value.branch) && (
+              {value.branch !== '' && !branches.includes(value.branch) && (
                 <option value={value.branch}>{value.branch} (not found)</option>
               )}
-              {repo.branches.map((b) => (
+              {branches.map((b) => (
                 <option key={b} value={b}>
                   {b}
                 </option>

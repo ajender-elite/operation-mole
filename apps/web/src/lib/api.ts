@@ -1,5 +1,19 @@
 import type {
   AddRemoteRequest,
+  GitCherryPick,
+  GitContains,
+  GitContainsRequest,
+  GitCherryPickRequest,
+  GitFiles,
+  GitFilesRequest,
+  GitFile,
+  GitFileRequest,
+  GitGrep,
+  GitGrepRequest,
+  GitRefs,
+  GitRefsRequest,
+  GitTree,
+  GitTreeRequest,
   CommitPatch,
   GitAncestry,
   GitAncestryRequest,
@@ -26,6 +40,13 @@ import type {
 } from '@om/shared';
 import {
   CommitPatchSchema,
+  GitCherryPickSchema,
+  GitContainsSchema,
+  GitFileSchema,
+  GitFilesSchema,
+  GitGrepSchema,
+  GitRefsSchema,
+  GitTreeSchema,
   RemoteCheckSchema,
   GitAncestrySchema,
   GitCompareTreesSchema,
@@ -355,4 +376,86 @@ export function getServerInfo(): Promise<ServerInfo> {
  */
 export async function deleteRepo(user: string, sessionId: string, repoId: string): Promise<void> {
   await send(`${sessionUrl(user, sessionId)}/repos/${encodeURIComponent(repoId)}`, json('DELETE'));
+}
+
+/**
+ * One folder of a commit's tree, one level deep: its folders and files, folders first (`POST /api/git/tree`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error (404 when the folder is missing), or returns an unexpected shape.
+ */
+export function gitTree(body: GitTreeRequest, signal?: AbortSignal): Promise<GitTree> {
+  return request('/api/git/tree', (b) => GitTreeSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * One file of a commit, whole: its text, or why there is none (`POST /api/git/file`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error (404 for a missing file), or returns an unexpected shape.
+ */
+export function gitFile(body: GitFileRequest, signal?: AbortSignal): Promise<GitFile> {
+  return request('/api/git/file', (b) => GitFileSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Lines of a commit that match a query, with context (`POST /api/git/grep`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function gitGrep(body: GitGrepRequest, signal?: AbortSignal): Promise<GitGrep> {
+  return request('/api/git/grep', (b) => GitGrepSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Every branch and tag of every remote of a repo, with how far each is ahead of and behind `compareTo`
+ * (`POST /api/git/refs`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function gitRefs(body: GitRefsRequest, signal?: AbortSignal): Promise<GitRefs> {
+  return request('/api/git/refs', (b) => GitRefsSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Would `git cherry-pick` of these commits, in order, onto a branch succeed? A dry run: nothing is written
+ * (`POST /api/git/cherry-pick`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function gitCherryPick(
+  body: GitCherryPickRequest,
+  signal?: AbortSignal,
+): Promise<GitCherryPick> {
+  return request('/api/git/cherry-pick', (b) => GitCherryPickSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Every file path of a commit, sorted, for go-to-file (`POST /api/git/files`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function gitFiles(body: GitFilesRequest, signal?: AbortSignal): Promise<GitFiles> {
+  return request('/api/git/files', (b) => GitFilesSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * The branches and tags, of every remote, that contain a commit (`POST /api/git/contains`).
+ * @throws {ApiRequestError} When the API is unreachable, answers with an error, or returns an unexpected shape.
+ */
+export function gitContains(body: GitContainsRequest, signal?: AbortSignal): Promise<GitContains> {
+  return request('/api/git/contains', (b) => GitContainsSchema.parse(b), {
+    ...json('POST', body),
+    ...(signal ? { signal } : {}),
+  });
 }

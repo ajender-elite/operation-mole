@@ -9,9 +9,13 @@ import type { DiffLayout } from '../components/snapshot-diff-view.tsx';
 import { gitLog, gitShow } from '../lib/api.ts';
 import { shortSha } from '../lib/attribution.ts';
 import { copyText } from '../lib/clipboard.ts';
+import { useContainingRefs } from '../lib/containing-refs.ts';
 import { countLines, fileAnchor, patchPath } from '../lib/commit-patch.ts';
 import { formatDate } from '../lib/dates.ts';
-import { commitUrl, logUrl } from '../lib/urls.ts';
+import { loadPicks, savePicks, withPick } from '../lib/pick-tray.ts';
+import { codeUrl, commitUrl, commitsUrl } from '../lib/urls.ts';
+import { CommitBranches } from '../components/commit-branches.tsx';
+import { ContainedIn } from '../components/contained-in.tsx';
 import { useSessionDetail, useSessionParams } from '../lib/session.ts';
 import { sourceLabel } from '../lib/sources.ts';
 import { useWorkspace } from '../lib/workspace-context.ts';
@@ -35,7 +39,8 @@ export function CommitPage(): JSX.Element {
   return <CommitDetails key={`${repoId}/${sha}`} repoId={repoId} sha={sha} />;
 }
 
-function CommitDetails({ repoId, sha }: { repoId: string; sha: string }) {
+/** One commit in full: its message and people, its parents, the Patch or Branches pane. Also the Commits pane. */
+export function CommitDetails({ repoId, sha }: { repoId: string; sha: string }): JSX.Element {
   const { user, sessionId } = useSessionParams();
   const session = useSessionDetail(user, sessionId);
   const repos = session.data?.repos ?? [];
@@ -43,6 +48,10 @@ function CommitDetails({ repoId, sha }: { repoId: string; sha: string }) {
   const [layout, setLayout] = useState<DiffLayout>('side');
   const [filter, setFilter] = useState('');
   const [rangeEnd, setRangeEnd] = useState('');
+  // The view is in the URL (pane=branches), so reloads and Back keep it; the patch is the default.
+  const [params, setParams] = useSearchParams();
+  const pane = params.get('pane') === 'branches' ? 'branches' : 'patch';
+  const [picks, setPicks] = useState(() => loadPicks(user, sessionId, repoId));
 
   const patch = useQuery({
     queryKey: ['git-show', user, sessionId, repoId, sha] as const,
@@ -50,6 +59,8 @@ function CommitDetails({ repoId, sha }: { repoId: string; sha: string }) {
       gitShow({ user, sessionId, source: { type: 'git', repoId, branch: sha } }, signal),
     staleTime: Infinity,
   });
+  // The branches and tags, of every remote, that have this commit (asked once, shown under the header).
+  const contained = useContainingRefs(user, sessionId, repoId, sha);
   // The full message: the log of this one commit carries its body.
   const meta = useQuery({
     queryKey: ['commit-meta', user, sessionId, repoId, sha] as const,
@@ -114,6 +125,20 @@ function CommitDetails({ repoId, sha }: { repoId: string; sha: string }) {
           <span className="font-mono text-sm text-ink">{shortSha(details.sha)}</span>
           <button
             type="button"
+            aria-pressed={picks.includes(sha)}
+            disabled={picks.includes(sha)}
+            className="touch-target flex items-center gap-1 rounded border border-line px-2 py-0.5 hover:bg-hover disabled:opacity-60"
+            onClick={() => {
+              // Collects this commit for a series (the Series tab opens with the commits collected here).
+              const next = withPick(picks, sha);
+              savePicks(user, sessionId, repoId, next);
+              setPicks(next);
+            }}
+          >
+            {picks.includes(sha) ? 'In series' : 'Add to series'}
+          </button>
+          <button
+            type="button"
             aria-label="Copy SHA"
             className="touch-target flex items-center gap-1 rounded border border-line px-2 py-0.5 hover:bg-hover"
             onClick={() => {
@@ -142,16 +167,58 @@ function CommitDetails({ repoId, sha }: { repoId: string; sha: string }) {
               ))}
             </span>
           )}
+          <button
+            type="button"
+            className="touch-target rounded border border-line px-2 py-0.5 hover:bg-hover"
+            onClick={() => {
+              workspace.open(codeUrl(user, sessionId, { type: 'git', repoId, branch: sha }));
+            }}
+          >
+            Browse files at this commit
+          </button>
+          <button
+            type="button"
+            className="touch-target rounded border border-line px-2 py-0.5 hover:bg-hover"
+            onClick={() => {
+              workspace.open(commitsUrl(user, sessionId, { type: 'git', repoId, branch: sha }));
+            }}
+          >
+            Commits from here
+          </button>
           <span className="text-muted">
             · {sourceLabel({ type: 'git', repoId, branch: sha }, repos)}
           </span>
         </div>
+        <ContainedIn
+          refs={contained.data?.refs}
+          isLoading={contained.isPending}
+          error={contained.error?.message}
+          onOpen={(ref) => {
+            workspace.open(
+              codeUrl(user, sessionId, {
+                type: 'git',
+                repoId,
+                remote: ref.remote,
+                branch: ref.name,
+              }),
+            );
+          }}
+        />
         <form
           className="flex flex-wrap items-center gap-2 text-xs"
           onSubmit={(event) => {
             event.preventDefault();
             const bottom = rangeEnd.trim();
-            if (bottom !== '') workspace.open(logUrl(user, sessionId, repoId, sha, bottom));
+            if (bottom !== '') {
+              workspace.open(
+                commitsUrl(
+                  user,
+                  sessionId,
+                  { type: 'git', repoId, branch: sha },
+                  { notIn: { type: 'git', repoId, branch: bottom } },
+                ),
+              );
+            }
           }}
         >
           <label className="flex items-center gap-2 text-muted">
@@ -176,67 +243,101 @@ function CommitDetails({ repoId, sha }: { repoId: string; sha: string }) {
         </form>
       </header>
 
-      <nav
-        aria-label="Files changed"
-        className="max-h-44 overflow-auto border-b border-line bg-canvas px-4 py-2 text-sm"
+      <div
+        role="group"
+        aria-label="View"
+        className="flex gap-1 border-b border-line bg-canvas px-4 py-1.5 text-sm"
       >
-        <div className="mb-1 flex flex-wrap items-center gap-2">
-          <input
-            type="search"
-            aria-label="Filter files"
-            placeholder="Filter files"
-            value={filter}
-            className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-sm"
-            onChange={(event) => {
-              setFilter(event.target.value);
+        {(['patch', 'branches'] as const).map((view) => (
+          <button
+            key={view}
+            type="button"
+            aria-pressed={pane === view}
+            className={clsx(
+              'touch-target rounded-md px-2.5 py-1',
+              pane === view ? 'bg-accent-soft font-medium text-ink' : 'text-muted hover:bg-hover',
+            )}
+            onClick={() => {
+              const next = new URLSearchParams(params);
+              if (view === 'patch') next.delete('pane');
+              else next.set('pane', view);
+              setParams(next);
             }}
-          />
-          <FileTotals patch={data} />
-        </div>
-        <ul className="space-y-0.5">
-          {data.files.map((file, index) => {
-            const path = patchPath(file);
-            if (needle !== '' && !path.toLowerCase().includes(needle)) return null;
-            const counts = countLines(file);
-            return (
-              <li key={`${file.oldPath ?? ''}\u0000${file.newPath ?? ''}`}>
-                <button
-                  type="button"
-                  className="touch-target flex w-full min-w-0 items-center gap-2 rounded px-1.5 py-0.5 text-left font-mono text-xs hover:bg-hover"
-                  onClick={() => {
-                    jumpTo(index);
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">{path}</span>
-                  {file.binary ? (
-                    <span className="font-sans text-muted">binary</span>
-                  ) : (
-                    <span className="shrink-0 font-sans tabular-nums">
-                      <span className="text-side-right">+{counts.additions}</span>{' '}
-                      <span className="text-side-left">−{counts.deletions}</span>
-                    </span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-
-      <div className={clsx('min-h-0 flex-1 overflow-auto')}>
-        <CommitFiles
-          patch={data}
-          layout={layout}
-          onLayoutChange={setLayout}
-          filter={filter}
-          anchorPrefix="commit"
-        />
-        {data.truncated && (
-          <p className="border-t border-line p-3 text-center text-muted">
-            This commit was cut short to stay responsive; some files or lines are not shown.
-          </p>
-        )}
+          >
+            {view === 'patch' ? 'Patch' : 'Branches'}
+          </button>
+        ))}
       </div>
+
+      {pane === 'branches' ? (
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          <CommitBranches repoId={repoId} sha={sha} parent={details.parents[0]} />
+        </div>
+      ) : (
+        <>
+          <nav
+            aria-label="Files changed"
+            className="max-h-44 overflow-auto border-b border-line bg-canvas px-4 py-2 text-sm"
+          >
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                aria-label="Filter files"
+                placeholder="Filter files"
+                value={filter}
+                className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-sm"
+                onChange={(event) => {
+                  setFilter(event.target.value);
+                }}
+              />
+              <FileTotals patch={data} />
+            </div>
+            <ul className="space-y-0.5">
+              {data.files.map((file, index) => {
+                const path = patchPath(file);
+                if (needle !== '' && !path.toLowerCase().includes(needle)) return null;
+                const counts = countLines(file);
+                return (
+                  <li key={`${file.oldPath ?? ''}\u0000${file.newPath ?? ''}`}>
+                    <button
+                      type="button"
+                      className="touch-target flex w-full min-w-0 items-center gap-2 rounded px-1.5 py-0.5 text-left font-mono text-xs hover:bg-hover"
+                      onClick={() => {
+                        jumpTo(index);
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{path}</span>
+                      {file.binary ? (
+                        <span className="font-sans text-muted">binary</span>
+                      ) : (
+                        <span className="shrink-0 font-sans tabular-nums">
+                          <span className="text-side-right">+{counts.additions}</span>{' '}
+                          <span className="text-side-left">−{counts.deletions}</span>
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+
+          <div className={clsx('min-h-0 flex-1 overflow-auto')}>
+            <CommitFiles
+              patch={data}
+              layout={layout}
+              onLayoutChange={setLayout}
+              filter={filter}
+              anchorPrefix="commit"
+            />
+            {data.truncated && (
+              <p className="border-t border-line p-3 text-center text-muted">
+                This commit was cut short to stay responsive; some files or lines are not shown.
+              </p>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

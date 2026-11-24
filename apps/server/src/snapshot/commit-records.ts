@@ -53,7 +53,8 @@ export function toCommitInfo(record: CommitRecord): CommitInfo {
  */
 export function parseMarkedCommitRecords(
   output: string,
-): Array<{ mark: string; commit: CommitRecord }> {
+  withBody = false,
+): Array<{ mark: string; commit: CommitRecord; body?: string | undefined }> {
   return output
     .split('\0')
     .map((r) => r.replace(/^\n/, ''))
@@ -61,7 +62,15 @@ export function parseMarkedCommitRecords(
     .flatMap((record) => {
       const separator = record.indexOf('\x1f');
       if (separator < 0) return [];
-      const [commit] = parseCommitRecords(record.slice(separator + 1));
-      return commit ? [{ mark: record.slice(0, separator), commit }] : [];
+      const mark = record.slice(0, separator);
+      const fields = record.slice(separator + 1).split('\x1f');
+      if (!withBody) {
+        const [commit] = parseCommitRecords(fields.join('\x1f'));
+        return commit ? [{ mark, commit }] : [];
+      }
+      // With the body: the nine header fields, then the message (which may hold unit separators).
+      const [commit] = parseCommitRecords(fields.slice(0, 9).join('\x1f'));
+      const body = fields.slice(9).join('\x1f').replace(/\n$/, '');
+      return commit ? [{ mark, commit, body }] : [];
     });
 }

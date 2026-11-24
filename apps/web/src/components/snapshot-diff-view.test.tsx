@@ -230,3 +230,50 @@ describe('SnapshotDiffView layout', () => {
     expect(onOpenCommit).toHaveBeenCalledWith('c-old-a', 'left');
   });
 });
+
+describe('syntax highlighting', () => {
+  it('colours each token of a line with its palette colour, in either layout', () => {
+    const keyword = { content: 'keep', color: 'var(--color-syntax-token-keyword)' };
+    const tokens = [[[keyword], [], [], [], [], [], []]];
+    const onOpenCommit = vi.fn();
+    const { rerender } = render(
+      <SnapshotDiffView
+        diff={diff}
+        leftLabel="Left"
+        rightLabel="Right"
+        focusedHunk={undefined}
+        focusedLine={undefined}
+        highlightCommit={undefined}
+        layout="side"
+        onFocusHunk={() => undefined}
+        onFocusLine={() => undefined}
+        onOpenCommit={onOpenCommit}
+        tokens={tokens}
+      />,
+    );
+    const sideBySide = screen.getAllByText('keep');
+    expect(
+      sideBySide.some((el) =>
+        (el.getAttribute('style') ?? '').includes('--color-syntax-token-keyword'),
+      ),
+    ).toBe(true);
+    rerender(
+      <SnapshotDiffView
+        diff={diff}
+        leftLabel="Left"
+        rightLabel="Right"
+        focusedHunk={undefined}
+        focusedLine={undefined}
+        highlightCommit={undefined}
+        layout="inline"
+        onFocusHunk={() => undefined}
+        onFocusLine={() => undefined}
+        onOpenCommit={onOpenCommit}
+        tokens={tokens}
+      />,
+    );
+    expect(
+      screen.getByText('keep').getAttribute('style')?.includes('--color-syntax-token-keyword'),
+    ).toBe(true);
+  });
+});

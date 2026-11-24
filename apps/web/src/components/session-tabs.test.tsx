@@ -1,6 +1,5 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { USER, repoInfo, sessionDetailHandler } from '../test/handlers.ts';
 import { tabIdentity } from '../lib/workspace.ts';
@@ -11,38 +10,28 @@ import { stubViewport } from '../test/setup.ts';
 const BASE = `/u/${USER}/s/s1`;
 const FILE = `${BASE}/file?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev&leftCommit=${'1'.repeat(40)}&rightCommit=${'2'.repeat(40)}&leftPath=a.txt&rightPath=a.txt`;
 const FOLDERS = `${BASE}/folders?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev`;
-const UPSTREAM = `${BASE}/upstream?leftRepo=r1&leftBranch=main&rightRepo=r1&rightBranch=dev`;
+const BETWEEN = `${BASE}/between?repo=r1&left=origin%2Fmain&right=origin%2Fdev`;
+/** A Between tab's name: its two branches. */
+const BETWEEN_NAME = /origin\/main … origin\/dev/;
 
 /** The tab strip (not the page's own role=tab elements). */
 const strip = () => screen.getByRole('tablist', { name: 'Open comparisons' });
 const queryTab = (name: RegExp) => within(strip()).queryByRole('tab', { name });
 
-/** Opens three tabs in this browser tab's session: overview, a file, a folder comparison, and upstream. */
+/** Opens three tabs in this browser tab's session: a file, a folder comparison, and a Between. */
 function seedTabs(): void {
   sessionStorage.setItem(
     `om-tabs:${USER}:s1`,
     JSON.stringify([
       { id: tabIdentity(FILE, BASE), url: FILE },
       { id: tabIdentity(FOLDERS, BASE), url: FOLDERS },
-      { id: tabIdentity(UPSTREAM, BASE), url: UPSTREAM },
+      { id: tabIdentity(BETWEEN, BASE), url: BETWEEN },
     ]),
   );
 }
 
 beforeEach(() => {
-  server.use(
-    sessionDetailHandler({ repos: [repoInfo()] }),
-    http.post('*/api/upstream/commits', () =>
-      HttpResponse.json({
-        upstream: { commit: '1'.repeat(40), ref: 'main' },
-        downstream: { commit: '2'.repeat(40), ref: 'dev' },
-        upstreamLabel: 'app @ main',
-        downstreamLabel: 'app @ dev',
-        commits: [],
-        hasMore: false,
-      }),
-    ),
-  );
+  server.use(sessionDetailHandler({ repos: [repoInfo()] }));
 });
 
 describe('workspace tab strip', () => {
@@ -54,8 +43,10 @@ describe('workspace tab strip', () => {
     await user.click(await screen.findByRole('button', { name: /^tabs/i }));
     const menu = screen.getByRole('group', { name: 'Open tabs' });
     expect(within(menu).getAllByRole('button', { name: /^switch to/i })).toHaveLength(4);
-    await user.click(within(menu).getByRole('button', { name: /switch to upstream/i }));
-    expect(within(strip()).getByRole('tab', { name: /upstream/i })).toHaveAttribute(
+    await user.click(
+      within(menu).getByRole('button', { name: /switch to origin\/main … origin\/dev/i }),
+    );
+    expect(within(strip()).getByRole('tab', { name: BETWEEN_NAME })).toHaveAttribute(
       'aria-selected',
       'true',
     );
@@ -69,11 +60,11 @@ describe('workspace tab strip', () => {
     await user.click(await screen.findByRole('button', { name: /^tabs/i }));
     await user.click(
       within(screen.getByRole('group', { name: 'Open tabs' })).getByRole('button', {
-        name: /close upstream/i,
+        name: /close origin\/main … origin\/dev/i,
       }),
     );
     await waitFor(() => {
-      expect(queryTab(/upstream/i)).not.toBeInTheDocument();
+      expect(queryTab(BETWEEN_NAME)).not.toBeInTheDocument();
     });
     expect(within(strip()).getByRole('tab', { name: /a\.txt/ })).toBeInTheDocument();
   });
