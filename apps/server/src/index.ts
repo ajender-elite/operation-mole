@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { buildApp } from './app.ts';
-import { loadServerConfig } from './config/server-config.ts';
+import { isLoopbackHost, loadServerConfig } from './config/server-config.ts';
 
 const repoRoot = path.join(import.meta.dirname, '..', '..', '..');
 const loaded = loadServerConfig(process.env, process.argv, repoRoot);
@@ -10,6 +10,11 @@ if (!loaded.ok) {
   process.exit(1);
 }
 const config = loaded.value;
+if (!isLoopbackHost(config.host)) {
+  console.warn(
+    `OM listens on ${config.host}: anyone who can reach that address can read the repositories and folders OM holds.`,
+  );
+}
 
 const webDist = path.join(repoRoot, 'apps', 'web', 'dist');
 const staticDir = config.isProduction && existsSync(webDist) ? webDist : undefined;

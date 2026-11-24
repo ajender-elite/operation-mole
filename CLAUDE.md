@@ -101,6 +101,7 @@ docs/             architecture, API, data model, git, comparison rules, frontend
 ## Pitfalls already hit
 
 - **Ports:** 5173 is used by another project on this machine. OM uses **5180** (web) and **5181** (API).
+- **API port and host:** the server reads `API_PORT` (env) and `--port` (command line, which wins), and `HOST` and `--host` the same way. The Vite proxy reads `API_PORT` too, so one variable moves dev. A non-loopback host (`0.0.0.0`) prints a warning at start.
 - **`API_PORT`, not `PORT`:** the preview runner sets `PORT=5180`, so the API reads `API_PORT`. Don't switch it back.
 - **Never kill node by name** (`pkill -f "node src/index.ts"`, `taskkill /IM node.exe`): it also kills the dev API, which runs that file under `node --watch`. Stop only the PID you started.
 - **`pnpm start` passes `--production`**, not `NODE_ENV=production` (that syntax breaks on Windows).

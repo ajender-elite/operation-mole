@@ -114,17 +114,32 @@ Runs on Linux, macOS and Windows. Needs:
 
 Nothing to install or build. From this folder:
 
-    node apps/server/src/index.ts --production
+    node start.ts
 
-Then open http://127.0.0.1:5181.
+It listens on port 49991 on every network interface, so other machines on your network can open it at
+http://<this machine>:49991, and this one at http://127.0.0.1:49991. Only run it on a network you trust:
+anyone who can reach OM can read the folders and repositories it holds.
 
-Settings are environment variables:
+Settings, as command-line flags or environment variables (a flag wins):
 
-- \`API_PORT\`: port (default 5181)
-- \`HOST\`: bind address (default 127.0.0.1; OM reads local paths and runs git, so keep it on
-  loopback unless you trust the network)
+- \`--port <n>\` or \`API_PORT\`: port (default 49991)
+- \`--host <address>\` or \`HOST\`: bind address (default 0.0.0.0, every interface; \`127.0.0.1\` keeps it on
+  this machine only)
 - \`OM_DATA_DIR\`: database and clones (default \`.data\` in this folder). Set it to keep your
   sessions when you replace this folder with a newer release.
+
+For example, on this machine only, on port 6000: \`node start.ts --host 127.0.0.1 --port 6000\`.
+`;
+
+/**
+ * What \`node start.ts\` runs: the server in production mode, with the release defaults (port 49991, every
+ * interface). The defaults apply only where nothing else set them, so \`API_PORT\`, \`HOST\` and the flags win.
+ */
+const LAUNCHER = `// OM's release start. Defaults: port 49991, every network interface. API_PORT, HOST, --port and --host override them.
+process.env.API_PORT ??= '49991';
+process.env.HOST ??= '0.0.0.0';
+process.argv.push('--production');
+await import('./apps/server/src/index.ts');
 `;
 
 /** Copies what the release runs: server and shared source, the built web app. */
@@ -144,10 +159,11 @@ async function copySources(out: string): Promise<void> {
     private: true,
     type: 'module',
     engines: { node: '>=26' },
-    scripts: { start: 'node apps/server/src/index.ts --production' },
+    scripts: { start: 'node start.ts' },
   };
   await writeFile(path.join(out, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`);
   await writeFile(path.join(out, 'README.md'), RUNNING);
+  await writeFile(path.join(out, 'start.ts'), LAUNCHER);
 }
 
 async function freePort(): Promise<number> {
@@ -218,5 +234,5 @@ await smokeTest(out);
 // tar ships with Linux, macOS and Windows 10+. Relative paths only, so every tar agrees.
 execFileSync('tar', ['-czf', `${name}.tar.gz`, name], { cwd: RELEASES, stdio: 'inherit' });
 process.stdout.write(
-  `\nRelease ready:\n  ${out}\n  ${out}.tar.gz\n\nRun it from that folder with: node apps/server/src/index.ts --production\n`,
+  `\nRelease ready:\n  ${out}\n  ${out}.tar.gz\n\nRun it from that folder with: node start.ts\n`,
 );

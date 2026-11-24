@@ -96,7 +96,9 @@ pnpm build
 pnpm start
 ```
 
-This serves the built app and the API together on http://127.0.0.1:5181.
+This serves the built app and the API together on http://127.0.0.1:5181. Pick another port with `--port 6000`, and reach it from other machines with `--host 0.0.0.0` (on a network you trust: anyone who can reach OM can read the folders and repositories it holds):
+
+    node apps/server/src/index.ts --production --port 6000 --host 0.0.0.0
 
 ### Build a release to run anywhere
 
@@ -163,13 +165,13 @@ How clones work:
 
 ## Configuration
 
-| Variable                                                                          | Default                 | Purpose                                                                                                           |
-| --------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `OM_DATA_DIR`                                                                     | `.data/` in the project | Database and cloned repos. Excluded from git.                                                                     |
-| `API_PORT`                                                                        | `5181`                  | API port                                                                                                          |
-| `HOST`                                                                            | `127.0.0.1`             | API bind address. The API reads any local path and runs git, so keep it on loopback unless you trust the network. |
-| `OM_MAX_SESSIONS_PER_USER`, `OM_MAX_REPOS_PER_SESSION`, `OM_MAX_REMOTES_PER_REPO` | `10`                    | Limits on creating sessions, repos and remotes (enforced on the server).                                          |
-| `OM_CACHE_MAX_MB`                                                                 | `256`                   | Size of the analysis cache per user, in megabytes.                                                                |
+| Variable                                                                          | Default                 | Purpose                                                                                                                                                                              |
+| --------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OM_DATA_DIR`                                                                     | `.data/` in the project | Database and cloned repos. Excluded from git.                                                                                                                                        |
+| `API_PORT`, or `--port <n>` on the command line (which wins)                      | `5181`                  | API port. The Vite proxy follows it in dev.                                                                                                                                          |
+| `HOST`, or `--host <address>` on the command line (which wins)                    | `127.0.0.1`             | API bind address. `0.0.0.0` listens on every interface; anyone who can reach it can read the folders and repositories OM holds, so keep it on loopback unless you trust the network. |
+| `OM_MAX_SESSIONS_PER_USER`, `OM_MAX_REPOS_PER_SESSION`, `OM_MAX_REMOTES_PER_REPO` | `10`                    | Limits on creating sessions, repos and remotes (enforced on the server).                                                                                                             |
+| `OM_CACHE_MAX_MB`                                                                 | `256`                   | Size of the analysis cache per user, in megabytes.                                                                                                                                   |
 
 ### Where data lives
 
@@ -183,12 +185,12 @@ To start fresh, stop the server and delete `.data/`.
 
 ## Troubleshooting
 
-| Symptom                                    | Fix                                                                                               |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| "Can't reach the OM API server"            | The API isn't running. Restart `pnpm dev` and check its output for errors.                        |
-| "Could not clone …: Authentication failed" | Make sure the machine running OM can run `git clone <url>` itself (SSH key or credential helper). |
-| A branch you just pushed is missing        | Click **Fetch latest** for that repo.                                                             |
-| Port 5180 or 5181 is busy                  | Stop the other process, or set `API_PORT` and change `server.port` in `apps/web/vite.config.ts`.  |
+| Symptom                                    | Fix                                                                                                                                                  |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Can't reach the OM API server"            | The API isn't running. Restart `pnpm dev` and check its output for errors.                                                                           |
+| "Could not clone …: Authentication failed" | Make sure the machine running OM can run `git clone <url>` itself (SSH key or credential helper).                                                    |
+| A branch you just pushed is missing        | Click **Fetch latest** for that repo.                                                                                                                |
+| Port 5180 or 5181 is busy                  | Stop the other process, or pick another API port: `API_PORT=6000 pnpm dev` (the web app's proxy follows it), or `--port 6000` on a production start. |
 
 ## Project layout
 

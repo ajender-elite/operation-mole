@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadServerConfig } from '../src/config/server-config.ts';
+import { isLoopbackHost, loadServerConfig } from '../src/config/server-config.ts';
 
 const repoRoot = path.join(path.parse(process.cwd()).root, 'repo');
 
@@ -84,5 +84,57 @@ describe('loadServerConfig', () => {
     const result = loadServerConfig({ API_PORT: port }, [], repoRoot);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toMatch(/API_PORT/);
+  });
+
+  it('takes the port from --port, which wins over API_PORT, in either form', () => {
+    expect(loadServerConfig({ API_PORT: '6000' }, ['--port', '6001'], repoRoot)).toMatchObject({
+      value: { port: 6001 },
+    });
+    expect(loadServerConfig({}, ['--production', '--port=6002'], repoRoot)).toMatchObject({
+      value: { port: 6002, isProduction: true },
+    });
+  });
+
+  it.each([['--port', 'abc'], ['--port', '0'], ['--port=70000'], ['--port']])(
+    'returns an error for the flag %j',
+    (...args) => {
+      const result = loadServerConfig({}, args, repoRoot);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toMatch(/--port/);
+    },
+  );
+});
+
+describe('loadServerConfig: the host', () => {
+  it('takes the host from --host, which wins over HOST, in either form', () => {
+    expect(loadServerConfig({ HOST: '127.0.0.1' }, ['--host', '0.0.0.0'], repoRoot)).toMatchObject({
+      value: { host: '0.0.0.0' },
+    });
+    expect(loadServerConfig({}, ['--production', '--host=0.0.0.0'], repoRoot)).toMatchObject({
+      value: { host: '0.0.0.0', isProduction: true },
+    });
+  });
+
+  it('keeps the default loopback address when no host is given', () => {
+    expect(loadServerConfig({}, [], repoRoot)).toMatchObject({ value: { host: '127.0.0.1' } });
+  });
+
+  it.each([['--host'], ['--host='], ['--host', '--production']])(
+    'returns an error for the flag without a host: %j',
+    (...args) => {
+      const result = loadServerConfig({}, args, repoRoot);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toMatch(/--host/);
+    },
+  );
+
+  it.each([
+    ['127.0.0.1', true],
+    ['localhost', true],
+    ['::1', true],
+    ['0.0.0.0', false],
+    ['192.168.1.20', false],
+  ])('knows whether %s is loopback only: %s', (host, expected) => {
+    expect(isLoopbackHost(host)).toBe(expected);
   });
 });

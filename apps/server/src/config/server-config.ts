@@ -19,6 +19,9 @@ export type ServerConfig = {
 
 const DEFAULT_API_PORT = 5181;
 
+/** A TCP port: a whole number from 1 to 65535. */
+const PortSchema = z.coerce.number().int().min(1).max(65_535);
+
 /** The limits when no `OM_MAX_*` setting says otherwise. */
 export const DEFAULT_LIMITS: ServerLimits = {
   sessionsPerUser: 10,
@@ -35,7 +38,7 @@ const limitVariable = (fallback: number) =>
  * `PORT` for the web app, so reading it would put the API on the web app's port.
  */
 const EnvSchema = z.object({
-  API_PORT: z.coerce.number().int().min(1).max(65_535).default(DEFAULT_API_PORT),
+  API_PORT: PortSchema.default(DEFAULT_API_PORT),
   // Local tool with filesystem access: bind to loopback unless told otherwise.
   HOST: z.string().min(1).default('127.0.0.1'),
   NODE_ENV: z.string().optional(),
@@ -46,6 +49,51 @@ const EnvSchema = z.object({
   /** The analysis cache's size per user, in megabytes. */
   OM_CACHE_MAX_MB: z.coerce.number().int().min(1).max(100_000).default(256),
 });
+
+/**
+ * The value of a command-line flag, as `--name value` or `--name=value`: undefined when the flag is absent, null
+ * when it has no value, and the value otherwise.
+ */
+function flagValue(argv: readonly string[], name: string): string | null | undefined {
+  const flag = `--${name}`;
+  const index = argv.findIndex((arg) => arg === flag || arg.startsWith(`${flag}=`));
+  if (index < 0) return undefined;
+  const arg = argv[index] ?? '';
+  const value = arg.startsWith(`${flag}=`) ? arg.slice(flag.length + 1) : argv[index + 1];
+  if (value === undefined || value === '' || value.startsWith('--')) return null;
+  return value;
+}
+
+/**
+ * The port the command line asks for (`--port 6000`), or undefined when it does not. It wins over `API_PORT`, so
+ * one start can use another port without changing the environment.
+ */
+function portFlag(argv: readonly string[]): Result<number | undefined> {
+  const value = flagValue(argv, 'port');
+  if (value === undefined) return { ok: true, value: undefined };
+  const parsed = PortSchema.safeParse(value ?? '');
+  if (!parsed.success) {
+    return { ok: false, error: new Error('--port must be a port number from 1 to 65535') };
+  }
+  return { ok: true, value: parsed.data };
+}
+
+/**
+ * The address the command line asks for (`--host 0.0.0.0`), or undefined when it does not. It wins over `HOST`.
+ * `0.0.0.0` listens on every network interface, so anyone on the network can reach OM (and the folders it reads).
+ */
+function hostFlag(argv: readonly string[]): Result<string | undefined> {
+  const value = flagValue(argv, 'host');
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null)
+    return { ok: false, error: new Error('--host needs an address, for example 0.0.0.0') };
+  return { ok: true, value };
+}
+
+/** Whether an address only accepts connections from this machine (loopback). */
+export function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
 
 /**
  * Validates the server's environment and command-line flags.
@@ -67,11 +115,15 @@ export function loadServerConfig(
     return { ok: false, error: new Error(`Invalid environment: ${problems.join('; ')}`) };
   }
   const vars = parsed.data;
+  const port = portFlag(argv);
+  if (!port.ok) return port;
+  const host = hostFlag(argv);
+  if (!host.ok) return host;
   return {
     ok: true,
     value: {
-      port: vars.API_PORT,
-      host: vars.HOST,
+      port: port.value ?? vars.API_PORT,
+      host: host.value ?? vars.HOST,
       isProduction: argv.includes('--production') || vars.NODE_ENV === 'production',
       dataDir: vars.OM_DATA_DIR ?? path.join(repoRoot, '.data'),
       limits: {
